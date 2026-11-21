@@ -28,7 +28,9 @@ adreno_only	k
 adreno_pause	k
 adreno_pll0_on	k
 adreno_ptbl_probe	k
+adreno_qs_smmu	k
 adreno_return	k
+adreno_ring_zero	k
 adreno_s2cr0_cb	k
 adreno_secure_pt	k
 adreno_secvid	k
@@ -103,6 +105,7 @@ bt_again	k
 buttons	k
 buttons_steps	k
 ca_metallib	u
+ca_prof	u
 ca_vbl	u
 caenv	u
 cam	kl
@@ -122,6 +125,7 @@ cc_fade	u
 cmdb	k
 cpufreq	k
 cpufreq_fix	k
+cpufreq_gov	k
 cpufreq_look	k
 cpuload	k
 cpumask	l
@@ -192,6 +196,7 @@ glyes	u
 gpu	k
 gpu_cached	k
 gpu_exact	k
+gpu_ib	k
 gpu_keep	k
 gpu_log	k
 gpu_probe	k
@@ -200,10 +205,23 @@ hapc	k
 haptic	k
 haptic_effect	k
 hv_wdt_pet	k
+intf_probe	k
 loader_return_after	kl
+m2v_utrace	u
 machine_name	k
 membench	k
 metal	ku
+metal_all	u
+metal_defer	u
+metal_dump	u
+metal_fps	u
+metal_gmem	u
+metal_gmem_draws	u
+metal_gmem_off	u
+metal_luma_boost	u
+metal_m2v	u
+metal_skip	u
+metal_trace	u
 metal_watch	u
 mic	k
 mic_adc	k
@@ -276,7 +294,11 @@ regtrace	k
 return_cpu	k
 return_panic	k
 root_apfs	u
+run_bin	u
+run_bin_args	u
+run_bin_at	u
 sb_delay	u
+sde_probe	k
 serial	l
 slpi	k
 slpi_base	k
@@ -309,6 +331,7 @@ surf_clear	k
 surf_wrap	k
 surftrace	k
 surftrace_of	k
+swipe_demo	u
 switcher_wallpaper	u
 syssleep	k
 systrace	k
@@ -334,6 +357,7 @@ touch_spi_hz	k
 touch_steps	k
 touch_sweep	k
 touchscreen	k
+tu_debug	u
 ufs	l
 ufs_bench	k
 ufs_check	k

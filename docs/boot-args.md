@@ -2,13 +2,13 @@
 
 Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
 
-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **402 arguments**: 345 read by the kernel, 14 by the loader, 53 by user space (one is read in more than one place).
+Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **426 arguments**: 351 read by the kernel, 14 by the loader, 71 by user space (one is read in more than one place).
 
 This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list. What the arguments of the two Metal paths do: [Metal on the Adreno](reference/metal.md#boot-arguments).
 
 Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl kern.bootargs`).
 
-## GPU and display (115)
+## GPU and display (121)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -42,7 +42,9 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `adreno_pause` | K | `hakios.adreno.c` | `CONFIG_ADRENO_PAUSE` |  |
 | `adreno_pll0_on` | K | `hakios.adreno.c` | `CONFIG_ADRENO_PLL0_ON` |  |
 | `adreno_ptbl_probe` | K | `hakios.adreno.c` | `CONFIG_ADRENO_PTBL_PROBE` |  |
+| `adreno_qs_smmu` | K | `hakios.adreno.c` | `CONFIG_ADRENO_QS_SMMU` |  |
 | `adreno_return` | K | `hakios.adreno.c` | `CONFIG_ADRENO_RETURN` |  |
+| `adreno_ring_zero` | K | `hakios.adreno.c` | `CONFIG_ADRENO_RING_ZERO` |  |
 | `adreno_s2cr0_cb` | K | `hakios.adreno.c` | `CONFIG_ADRENO_S2CR0_CB` |  |
 | `adreno_secure_pt` | K | `hakios.adreno.c` | `CONFIG_ADRENO_SECURE_PT` |  |
 | `adreno_secvid` | K | `hakios.adreno.c` | `CONFIG_ADRENO_SECVID` |  |
@@ -112,20 +114,24 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `gpu` | K | `hakios.adreno.c` | `CONFIG_GPU` |  |
 | `gpu_cached` | K | `hakios.gpu.cpp` | `CONFIG_GPU_CACHED` |  |
 | `gpu_exact` | K | `hakios.adreno.c` | `CONFIG_GPU_EXACT` |  |
+| `gpu_ib` | K | `hakios.adreno.c`, `hakios.gpu.cpp` | `CONFIG_GPU_IB` |  |
 | `gpu_keep` | K | `hakios.gpu.cpp` | `CONFIG_GPU_KEEP` |  |
 | `gpu_log` | K | `hakios.adreno.c` | `CONFIG_GPU_LOG` |  |
 | `gpu_probe` | K | `hakios.adreno.c` | `CONFIG_GPU_PROBE` |  |
+| `hakios_kver` | K | `MiniIOMobileFramebuffer.cpp`, `hakios.version.c` |  | the loader (from the payload's kernel.ver) |
+| `intf_probe` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_INTF_PROBE` |  |
 | `metal` | KU | `HakiosMetal.m`, `MiniIOMobileFramebuffer.cpp`, `inject_sb.c` | `CONFIG_METAL` |  |
 | `rec_mb` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_MB` |  |
 | `rec_ring` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_RING` |  |
 | `rec_secs` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_SECS` |  |
 | `rec_start` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_START` |  |
 | `rec_step` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_REC_STEP` |  |
+| `sde_probe` | K | `MiniIOMobileFramebuffer.cpp` | `CONFIG_SDE_PROBE` |  |
 | `surf_clear` | K | `MiniIOSurface.cpp` | `CONFIG_SURF_CLEAR` |  |
 | `surf_wrap` | K | `MiniIOSurface.cpp` | `CONFIG_SURF_WRAP` |  |
 | `surftrace` | K | `MiniIOSurface.cpp` | `CONFIG_SURFTRACE` |  |
 | `surftrace_of` | K | `MiniIOSurface.cpp` | `CONFIG_SURFTRACE_OF` |  |
-| `touch_lat` | KU | `MiniIOMobileFramebuffer.cpp`, `eagl.c`, `hakios.goodix.c`, `hakios.gpu.cpp`, `hakios.input.c`, `inject.c`, `inject_sb.c` | `CONFIG_TOUCH_LAT` |  |
+| `touch_lat` | KU | `HakiosMetalCA.m`, `MiniIOMobileFramebuffer.cpp`, `eagl.c`, `hakios.goodix.c`, `hakios.gpu.cpp`, `hakios.input.c`, `inject.c`, `inject_sb.c` | `CONFIG_TOUCH_LAT` |  |
 | `vblur` | U | `eagl.c` | `CONFIG_VBLUR` |  |
 
 ## Security stand-ins (1)
@@ -390,13 +396,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `thermal_tm0` | K | `hakios.thermal.c` | `CONFIG_THERMAL_TM0` |  |
 | `thermal_tm1` | K | `hakios.thermal.c` | `CONFIG_THERMAL_TM1` |  |
 
-## Version (1)
-
-| Argument | Layer | Read by | Configuration | Set by |
-|---|---|---|---|---|
-| `hakios_kver` | K | `hakios.version.c` |  | the loader (from the payload's kernel.ver) |
-
-## CPU, memory and boot (30)
+## CPU, memory and boot (31)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -406,6 +406,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `cmdb` | K | `hakios.cpufreq.c` | `CONFIG_CMDB` |  |
 | `cpufreq` | K | `hakios.cpufreq.c` | `CONFIG_CPUFREQ` |  |
 | `cpufreq_fix` | K | `hakios.cpufreq.c` | `CONFIG_CPUFREQ_FIX` |  |
+| `cpufreq_gov` | K | `hakios.cpufreq.c` | `CONFIG_CPUFREQ_GOV` |  |
 | `cpufreq_look` | K | `hakios.cpufreq.c` | `CONFIG_CPUFREQ_LOOK` |  |
 | `cpuload` | K | `hakios.cpufreq.c` | `CONFIG_CPULOAD` |  |
 | `ddr` | K | `hakios.cpufreq.c` | `CONFIG_DDR` |  |
@@ -453,7 +454,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `ufs` | L | `loader.c` | `CONFIG_UFS` |  |
 | `ufs_probe` | L | `loader.c` | `CONFIG_UFS_PROBE` |  |
 
-## User space (32)
+## User space (50)
 
 | Argument | Layer | Read by | Configuration | Set by |
 |---|---|---|---|---|
@@ -463,6 +464,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `bt` | K | `hakios.bt.c` | `CONFIG_BT` |  |
 | `bt_again` | K | `hakios.bt.c` | `CONFIG_BT_AGAIN` |  |
 | `ca_metallib` | U | `inject.c` | `CONFIG_CA_METALLIB` |  |
+| `ca_prof` | U | `HakiosMetalCA.m` | `CONFIG_CA_PROF` |  |
 | `ca_vbl` | U | `inject.c` | `CONFIG_CA_VBL` |  |
 | `caenv` | U | `inject.c`, `inject_sb.c` | `CONFIG_CAENV` |  |
 | `cc_fade` | U | `inject_sb.c` | `CONFIG_CC_FADE` |  |
@@ -474,13 +476,30 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
 | `glsb3` | U | `inject.c` | `CONFIG_GLSB3` |  |
 | `glyes` | U | `inject.c` | `CONFIG_GLYES` |  |
 | `hapc` | K | `hakios.hapc.c` | `CONFIG_HAPC` |  |
+| `m2v_utrace` | U | `HakiosMetalCA.m` | `CONFIG_M2V_UTRACE` |  |
+| `metal_all` | U | `HakiosMetalCA.m` | `CONFIG_METAL_ALL` |  |
+| `metal_defer` | U | `HakiosMetalCA.m` | `CONFIG_METAL_DEFER` |  |
+| `metal_dump` | U | `HakiosMetalCA.m` | `CONFIG_METAL_DUMP` |  |
+| `metal_fps` | U | `HakiosMetalCA.m` | `CONFIG_METAL_FPS` |  |
+| `metal_gmem` | U | `HakiosMetalCA.m` | `CONFIG_METAL_GMEM` |  |
+| `metal_gmem_draws` | U | `HakiosMetalCA.m` | `CONFIG_METAL_GMEM_DRAWS` |  |
+| `metal_gmem_off` | U | `HakiosMetalCA.m` | `CONFIG_METAL_GMEM_OFF` |  |
+| `metal_luma_boost` | U | `HakiosMetalCA.m` | `CONFIG_METAL_LUMA_BOOST` |  |
+| `metal_m2v` | U | `HakiosMetalCA.m` | `CONFIG_METAL_M2V` |  |
+| `metal_skip` | U | `HakiosMetalCA.m` | `CONFIG_METAL_SKIP` |  |
+| `metal_trace` | U | `HakiosMetalCA.m` | `CONFIG_METAL_TRACE` |  |
 | `metal_watch` | U | `inject.c` | `CONFIG_METAL_WATCH` |  |
 | `root_apfs` | U | `init.c` | `CONFIG_ROOT_APFS` |  |
+| `run_bin` | U | `init.c` | `CONFIG_RUN_BIN` |  |
+| `run_bin_args` | U | `init.c` | `CONFIG_RUN_BIN_ARGS` |  |
+| `run_bin_at` | U | `init.c` | `CONFIG_RUN_BIN_AT` |  |
 | `sb_delay` | U | `inject_sb.c` |  | xl (XL_SB_DELAY) |
 | `slpi` | K | `hakios.slpi.c` | `CONFIG_SLPI` |  |
 | `slpi_base` | K | `hakios.slpi.c` | `CONFIG_SLPI_BASE` |  |
 | `slpi_wait` | K | `hakios.slpi.c` | `CONFIG_SLPI_WAIT` |  |
+| `swipe_demo` | U | `init.c` | `CONFIG_SWIPE_DEMO` |  |
 | `switcher_wallpaper` | U | `inject_sb.c` | `CONFIG_SWITCHER_WALLPAPER` |  |
+| `tu_debug` | U | `HakiosMetalCA.m` | `CONFIG_TU_DEBUG` |  |
 | `ui_lite` | U | `inject_sb.c` | `CONFIG_UI_LITE` |  |
 | `var_hfs` | U | `init.c` | `CONFIG_VAR_HFS` |  |
 | `var_store` | U | `init.c` | `CONFIG_VAR_STORE` |  |

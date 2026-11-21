@@ -4941,11 +4941,16 @@ step_core_commands(void)
 		return false;
 	}
 	/*
-	 * The ring starts empty: a command processor whose read position the firmware left ahead of
-	 * our write position reads stale commands (rptr 272 over wptr 259 in the CA runs, and the 3D
-	 * hung on the garbage). Zero the ring and put both positions at zero before the first run.
+	 * 6 November added a ring reset here for a stale firmware rptr seen in the CA runs, but
+	 * CP_RB_RPTR does not take a write while the command processor is already running: step 20
+	 * left the hardware rptr at 176, this reset wrote both pointers as 0, and the next
+	 * submission found rptr 176 against wptr 2 and faulted (status 0x800005,
+	 * logs/221439-run.log). The 11-05 kernel that passes step 21 leaves the ring alone here.
+	 * Keep the experiment, but off by default: boot-arg adreno_ring_zero=1 asks for it.
 	 */
-	{
+	uint32_t ring_zero = 0;
+	PE_parse_boot_argn("adreno_ring_zero", &ring_zero, sizeof(ring_zero));
+	if (ring_zero) {
 		volatile uint32_t *ring = (volatile uint32_t *) core_ring.memory;
 
 		for (uint32_t i = 0; i < RING_WORDS; i++) {

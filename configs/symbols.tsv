@@ -28,7 +28,9 @@ ADRENO_ONLY	arg	adreno_only	GPU and display	k	hakios.adreno.c	step K alone (what
 ADRENO_PAUSE	arg	adreno_pause	GPU and display	k	hakios.adreno.c	how long the newest step waits after announcing a group of accesses (default 2200)
 ADRENO_PLL0_ON	arg	adreno_pll0_on	GPU and display	k	hakios.adreno.c	
 ADRENO_PTBL_PROBE	arg	adreno_ptbl_probe	GPU and display	k	hakios.adreno.c	
+ADRENO_QS_SMMU	arg	adreno_qs_smmu	GPU and display	k	hakios.adreno.c	
 ADRENO_RETURN	arg	adreno_return	GPU and display	k	hakios.adreno.c	when all is over, go back to the loader instead of starting the system
+ADRENO_RING_ZERO	arg	adreno_ring_zero	GPU and display	k	hakios.adreno.c	
 ADRENO_S2CR0_CB	arg	adreno_s2cr0_cb	GPU and display	k	hakios.adreno.c	
 ADRENO_SECURE_PT	arg	adreno_secure_pt	GPU and display	k	hakios.adreno.c	
 ADRENO_SECVID	arg	adreno_secvid	GPU and display	k	hakios.adreno.c	
@@ -98,6 +100,7 @@ BT_AGAIN	arg	bt_again	User space	k	hakios.bt.c	the second look this many seconds
 BUTTONS	arg	buttons	Touch and buttons	k	hakios.buttons.c	
 BUTTONS_STEPS	arg	buttons_steps	Touch and buttons	k	hakios.buttons.c	
 CA_METALLIB	arg	ca_metallib	User space	u	inject.c	
+CA_PROF	arg	ca_prof	User space	u	HakiosMetalCA.m	
 CA_VBL	arg	ca_vbl	User space	u	inject.c	CoreAnimation's frame clock from the display driver's refresh notifications
 CAENV	arg	caenv	User space	u	inject.c,inject_sb.c	CoreAnimation's switches here as in the window server (inject.c), set before QuartzCore reads them
 CAM_AFTER	arg	cam_after	Cameras	k	hakios.camera.c	
@@ -115,6 +118,7 @@ CAM_VBLANK	arg	cam_vblank	Cameras	k	hakios.camera.c
 CC_FADE	arg	cc_fade	User space	u	inject_sb.c	
 CMDB	arg	cmdb	CPU, memory and boot	k	hakios.cpufreq.c	
 CPUFREQ_FIX	arg	cpufreq_fix	CPU, memory and boot	k	hakios.cpufreq.c	
+CPUFREQ_GOV	arg	cpufreq_gov	CPU, memory and boot	k	hakios.cpufreq.c	
 CPUFREQ_LOOK	arg	cpufreq_look	CPU, memory and boot	k	hakios.cpufreq.c	read-only. Every group's control registers, what the hardware says it is at right now, and every row of its table decoded: to find where an SoC's
 CPULOAD	arg	cpuload	CPU, memory and boot	k	hakios.cpufreq.c	every MS milliseconds, how busy each of our cores was meanwhile, in percent, to the loader's log (tools/frames.py shows it per gesture)
 CPUMASK	arg	cpumask	Loader	l	loader.c	
@@ -182,14 +186,28 @@ GLWAIT	arg	glwait	GPU and display	u	eagl.c
 GLYES	arg	glyes	User space	u	inject.c	the renderer is made to answer that it has those functions after all
 GPU_CACHED	arg	gpu_cached	GPU and display	k	hakios.gpu.cpp	
 GPU_EXACT	arg	gpu_exact	GPU and display	k	hakios.adreno.c	
+GPU_IB	arg	gpu_ib	GPU and display	k	hakios.adreno.c,hakios.gpu.cpp	
 GPU_KEEP	arg	gpu_keep	GPU and display	k	hakios.gpu.cpp	
 GPU_LOG	arg	gpu_log	GPU and display	k	hakios.adreno.c	
 GPU_PROBE	arg	gpu_probe	GPU and display	k	hakios.adreno.c	
 HAPC	arg	hapc	User space	k	hakios.hapc.c	
 HAPTIC_EFFECT	arg	haptic_effect	Haptics and torch	k	hakios.haptic.c	
+INTF_PROBE	arg	intf_probe	GPU and display	k	MiniIOMobileFramebuffer.cpp	read-only. The SM8150 SDE's INTF0 is at 0xae6b000 (the phone's own device tree, qcom,sde-intf-off = <0x6b000 ...> over 0xae00000): sample every word
+M2V_UTRACE	arg	m2v_utrace	User space	u	HakiosMetalCA.m	Turnip's GPU trace of every render pass (u_trace) into a file, printed during the run
 MACHINE_NAME	arg	machine_name	CPU, memory and boot	k	GenericARMPE.cpp	
 MEMBENCH	arg	membench	CPU, memory and boot	k	hakios.cpufreq.c	
 METAL	arg	metal	GPU and display	ku	HakiosMetal.m,MiniIOMobileFramebuffer.cpp,inject_sb.c	only the program metal_test (userland/src/metal_test.m): the safe level, for seeing what Metal does with the device
+METAL_ALL	arg	metal_all	User space	u	HakiosMetalCA.m	
+METAL_DEFER	arg	metal_defer	User space	u	HakiosMetalCA.m	this queue's command buffers recorded by a thread of hakios-metal's own (deferred recording), so that the window server's render thread does not wait
+METAL_DUMP	arg	metal_dump	User space	u	HakiosMetalCA.m	
+METAL_FPS	arg	metal_fps	User space	u	HakiosMetalCA.m	each draw of a sysmem pass timed alone, by program (only sysmem passes are: without metal_gmem=1)
+METAL_GMEM	arg	metal_gmem	User space	u	HakiosMetalCA.m	
+METAL_GMEM_DRAWS	arg	metal_gmem_draws	User space	u	HakiosMetalCA.m	GMEM for a pass whose like had at least N draws in the frame before (hakios_metal_cb_set_gmem_min_draws), sysmem for the rest; 56 when not given, 0
+METAL_GMEM_OFF	arg	metal_gmem_off	User space	u	HakiosMetalCA.m	
+METAL_LUMA_BOOST	arg	metal_luma_boost	User space	u	HakiosMetalCA.m	
+METAL_M2V	arg	metal_m2v	User space	u	HakiosMetalCA.m	
+METAL_SKIP	arg	metal_skip	User space	u	HakiosMetalCA.m	
+METAL_TRACE	arg	metal_trace	User space	u	HakiosMetalCA.m	
 METAL_WATCH	arg	metal_watch	User space	u	inject.c	
 MIC_ADC	arg	mic_adc	Audio and battery	k	hakios.mic.c	
 MIC_INPUT	arg	mic_input	Audio and battery	k	hakios.mic.c	
@@ -255,6 +273,10 @@ REGTRACE	arg	regtrace	CPU, memory and boot	k	(patch)
 RETURN_CPU	arg	return_cpu	CPU, memory and boot	k	loader_return.c	
 RETURN_PANIC	arg	return_panic	CPU, memory and boot	k	loader_return.c	
 ROOT_APFS	arg	root_apfs	User space	u	init.c	the root is to be the Darwin root volume on /dev/DEV -- the phone's flash, read only
+RUN_BIN	arg	run_bin	User space	u	init.c	
+RUN_BIN_ARGS	arg	run_bin_args	User space	u	init.c	
+RUN_BIN_AT	arg	run_bin_at	User space	u	init.c	
+SDE_PROBE	arg	sde_probe	GPU and display	k	MiniIOMobileFramebuffer.cpp	
 SERIAL	arg	serial	Loader	l	loader.c	
 SLPI	arg	slpi	User space	k	hakios.slpi.c	the mailbox is left alone and TrustZone is asked directly
 SLPI_BASE	hex	slpi_base	User space	k	hakios.slpi.c	
@@ -285,6 +307,7 @@ SURF_CLEAR	arg	surf_clear	GPU and display	k	MiniIOSurface.cpp	kept memory is giv
 SURF_WRAP	arg	surf_wrap	GPU and display	k	MiniIOSurface.cpp	surfaces around the client's pictures refused, as before methodWrapClientImage (for comparing)
 SURFTRACE	arg	surftrace	GPU and display	k	MiniIOSurface.cpp	log the first N surfaces created (default 24)
 SURFTRACE_OF	arg	surftrace_of	GPU and display	k	MiniIOSurface.cpp	
+SWIPE_DEMO	arg	swipe_demo	User space	u	init.c	
 SWITCHER_WALLPAPER	arg	switcher_wallpaper	User space	u	inject_sb.c	
 SYSSLEEP	arg	syssleep	CPU, memory and boot	k	(patch)	
 SYSTRACE	arg	systrace	CPU, memory and boot	k	(patch),user_exception_trace.c	
@@ -300,12 +323,13 @@ TOUCH	arg	touch	Touch and buttons	k	hakios.bq27541.c,hakios.s3706.c	turn the bus
 TOUCH_2V8	arg	touch_2v8	Touch and buttons	k	hakios.s3706.c	
 TOUCH_BB	arg	touch_bb	Touch and buttons	k	hakios.s3706.c	
 TOUCH_FLIP	arg	touch_flip	Touch and buttons	k	hakios.goodix.c	
-TOUCH_LAT	arg	touch_lat	GPU and display	ku	MiniIOMobileFramebuffer.cpp,eagl.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for telling apart what holds a frame up
+TOUCH_LAT	arg	touch_lat	GPU and display	ku	HakiosMetalCA.m,MiniIOMobileFramebuffer.cpp,eagl.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for telling apart what holds a frame up
 TOUCH_POLL_US	arg	touch_poll_us	Touch and buttons	k	hakios.goodix.c	
 TOUCH_RATE	arg	touch_rate	Touch and buttons	k	hakios.goodix.c	the chip reports twice as often (Xiaomi's game mode; 240 otherwise)
 TOUCH_SPI_HZ	arg	touch_spi_hz	Touch and buttons	k	hakios.goodix.c	the bus at N Hz (Android's device tree gives the chip 5 MHz)
 TOUCH_STEPS	arg	touch_steps	Touch and buttons	k	hakios.s3706.c	stop after step N
 TOUCH_SWEEP	arg	touch_sweep	Touch and buttons	k	hakios.s3706.c	re-run the sweep that asks every PMIC GPIO which one is the 1.8 V enable
+TU_DEBUG	arg	tu_debug	User space	u	HakiosMetalCA.m	Turnip's TU_DEBUG in the window server (sysmem, gmem, forcebin, ...)
 UFS_BENCH	arg	ufs_bench	Storage and APFS	k	hakios.ufs.c	what one request through the loader costs, by size
 UFS_CHECK	arg	ufs_check	Storage and APFS	k	hakios.ufs.c	
 UFS_NATIVE	arg	ufs_native	Storage and APFS	kl	hakios.ufs.c,loader.c	through this kernel's own driver instead, its own transfer list in the controller for the run, if all is as expected; 2: only look; 3: a dry run --
