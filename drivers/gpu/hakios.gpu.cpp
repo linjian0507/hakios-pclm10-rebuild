@@ -1057,7 +1057,12 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 	hakios_gpu_to_memory(NULL, 0);                 /* (and what was written last is in memory: a barrier) */
 	gGPUStat.flushing += mach_absolute_time() - began;
 	gGPUStat.buffers += request->nr_bos;
-	IOLog("HakiosGPU: submit: %u cmds, %u bos, gpu_ib=%u\n", request->nr_cmds, request->nr_bos, gpuIb);
+	/* 6 November added this on every submission. The accepted 11-05 kernel is quiet here; the
+	 * 1871 lines in the 180 s animation run (up to 65 a second) are pure diagnostic cost in the
+	 * "handing on" path. Keep it behind the existing gpu_log switch, off by default. */
+	if (gpu_log) {
+		IOLog("HakiosGPU: submit: %u cmds, %u bos, gpu_ib=%u\n", request->nr_cmds, request->nr_bos, gpuIb);
+	}
 	for (uint32_t i = 0; i < request->nr_cmds; i++) {
 		struct gpu_buffer * b = cmds[i].submit_idx < request->nr_bos ? buffer(bos[cmds[i].submit_idx].handle) : NULL;
 
