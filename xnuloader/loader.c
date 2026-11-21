@@ -588,6 +588,23 @@ static const struct platform platform_redwood = {
 	.small_cores = 0x0f,
 };
 
+static const struct platform platform_sm8150 = {
+	/* io_base must be non-zero: XNU treats a zero SoC base as "no SoC" and skips clock setup. */
+	.name = "sm8150", .io_base = 0x00400000, .io_size = 0x3FC00000,
+	.gic_dist = 0x17A00000, .gic_redist = 0x17A60000, .uart = 0, .log_other_cpu = 1,
+	.cores = 8, .core_shift = 8,
+	/*
+	 * The Reno Ace's Kryo 485: cores 0-3 are the silver ones (Cortex-A55 designs, 1.8 GHz), 4-6 the
+	 * gold ones (A76, 2.42 GHz) and 7 the gold prime (2.84 GHz): a gold one is about 1.7 times as
+	 * fast at the same clock and sits at a higher one - the phone's own device tree says so, with
+	 * capacity-dmips-mhz 0x400 on cpu0-3 and 0x6cc on cpu4-7. The kernel uses the silver ones only
+	 * when the gold ones are all busy (XNU's machine_routines.c, ml_choose_slow_core_partners()).
+	 * PSCI is called with SMC, as the phone's own device tree says (psci { method = "smc" }), and
+	 * the GIC is the SM8150's at the same addresses redwood's SM7325 has its GIC.
+	 */
+	.small_cores = 0x0f,
+};
+
 /* ------------------------------------------------------------------------ */
 
 static void
@@ -2503,7 +2520,7 @@ wdt_arm(void)
 {
 	uint64_t ctl = 0, since = 0;
 
-	if (PLAT != &platform_redwood) {
+	if (PLAT != &platform_redwood && PLAT != &platform_sm8150) {
 		return; /* SMC is not routed anywhere useful on QEMU virt */
 	}
 	uint64_t st = smc_call(VIRT_WDT_STATUS, 0, 0, &ctl, &since);
@@ -4345,6 +4362,11 @@ efi_main(efi_handle image, efi_system_table *st)
 		SCREEN.stride = GOP->mode->info->pixels_per_scanline * 4;
 		if (SCREEN.base == 0xE1000000ULL) {
 			PLAT = &platform_redwood;
+		} else if (SCREEN.base == 0x9D000000ULL) {   /* the Reno Ace: its own cont_splash_region, from
+		                                            devices/pclm10/prebuilt/device-tree.dtb (read out
+		                                            of its boot partition over EDL); U-Boot's
+		                                            framebuffer for this phone is at that address */
+			PLAT = &platform_sm8150;
 		} else {
 			ramfb_phone_screen();
 		}

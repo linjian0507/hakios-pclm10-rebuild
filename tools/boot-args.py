@@ -20,10 +20,11 @@ an argument means is in the head of that file, and for the stable ones in tools/
 
 What is looked for:
   the kernel   PE_parse_boot_argn("name" ...) and PE_parse_boot_arg_str("name" ...), in xnu/files/ and in the lines
-               xnu/hakios.patch adds to Apple's files
+               xnu/hakios.patch adds to Apple's files, in drivers/<subsystem>/, and in a device's own
+               devices/<name>/drivers/<subsystem>/
   the loader   starts_with(c, "name=...") on the payload's command line, in xnuloader/
   user space   a name given to strstr()/strncmp() on sysctl kern.bootargs, in userland/src/ (seen: sb_delay=, touch_lat=1,
-               ca_vbl=1 ...)
+               ca_vbl=1 ...), or to the Metal plug-in's helper hm_boot_arg_set("metal_m2v=1")
 """
 import argparse
 import collections
@@ -55,6 +56,8 @@ LOADER = re.compile(r'starts_with\((?:c|cmd|p|a|s), "([a-z][a-z0-9_.]*)=')
 # user space reads sysctl kern.bootargs into a buffer called arguments, args or argument, and looks in it with strstr:
 # strstr(arguments, "gltrace_at="), strstr(args, "touch_lat=1"): the name is what stands before the =
 USER = re.compile(r'strstr\(\s*(?:arguments|args|argument)\s*,\s*"([a-z][a-z0-9_]*)=')
+# ... and the Metal plug-in has a helper that is given the whole word: hm_boot_arg_set("metal_m2v=1") in HakiosMetalCA.m
+HM_ARG = re.compile(r'\bhm_boot_arg_set\(\s*"([a-z][a-z0-9_]*)=')
 
 # the group an argument is listed under: by the file that reads it (the first match decides)
 GROUPS = [
@@ -62,9 +65,9 @@ GROUPS = [
     ("Security stand-ins", r"kern_minimac|miniamfi"),
     ("Wi-Fi", r"hakios\.(wifi|wlfw|lx|sta|apple80211)\.|^lx_[a-z0-9]+\.c$"),     # wifi/lx/src/lx_*.c: the Linux layer
     ("Cellular", r"hakios\.(mpss|ipa|cell|nas|qmi)\."),
-    ("Audio and battery", r"hakios\.(adsp|audio|sound|speaker|mic|virtio_sound|battery|battguard)\."),
+    ("Audio and battery", r"hakios\.(adsp|audio|sound|speaker|mic|virtio_sound|battery|battguard|smb5)\."),
     ("Cameras", r"hakios\.camera\."),
-    ("Touch and buttons", r"hakios\.(goodix|input|buttons|virtio_input)\."),
+    ("Touch and buttons", r"hakios\.(goodix|input|buttons|virtio_input|s3706|pon)\."),
     ("Storage and APFS", r"hakios\.(ufs|ufshc|virtio_blk|sparse|apfs_check)\.|apfs_vfsops\."),
     ("Network", r"hakios\.(net|virtio_net)\."),
     ("Haptics and torch", r"hakios\.(haptic|torch)\."),
@@ -102,11 +105,35 @@ def tracked(root):
     return [p.decode() for p in out.split(b"\0") if p]
 
 
+def device_files(root):
+    """the source of the device and SoC layers. devices/<name>/ and socs/<name>/ are repositories of
+    their own (devices/manifest.conf) and .gitignore keeps them out of git ls-files here, yet a device's
+    drivers are built into the kernel exactly like the ones in drivers/ (the build copies them from
+    devices/<name>/drivers/<subsystem>/ into bsd/dev/), so the arguments they read belong in the
+    catalogue too. Only the drivers/ subtrees: the rest of a layer is the vendor's tree and the phone's
+    own images, which read no boot-arguments."""
+    out = []
+    for base in ("devices", "socs"):
+        top = os.path.join(root, base)
+        if not os.path.isdir(top):
+            continue
+        for name in sorted(os.listdir(top)):
+            for sub in ("drivers", os.path.join("soc", "drivers")):
+                here = os.path.join(top, name, sub)
+                if not os.path.isdir(here):
+                    continue
+                for dirpath, _, names in os.walk(here):
+                    out.extend(os.path.relpath(os.path.join(dirpath, n), root).replace(os.sep, "/")
+                               for n in sorted(names))
+    return out
+
+
 def scan(root, keep=None):
-    """{name: {"kernel": {files}, "loader": {files}, "user": {files}, "str": {files}}} found in the tracked source.
+    """{name: {"kernel": {files}, "loader": {files}, "user": {files}, "str": {files}}} found in the tracked source
+    and in the device layers (device_files).
     `keep`, if given, is filled with {file name: text} of every source file read (the descriptions are taken from it)."""
     found = collections.defaultdict(lambda: {"kernel": set(), "loader": set(), "user": set(), "str": set()})
-    for f in tracked(root):
+    for f in tracked(root) + device_files(root):
         if not f.endswith((".c", ".cpp", ".m", ".h", ".patch")):
             continue
         try:
@@ -119,8 +146,9 @@ def scan(root, keep=None):
         if f == "xnu/hakios.patch":
             text = "\n".join(l[1:] for l in text.splitlines() if l.startswith("+") and not l.startswith("+++"))
             base = "(patch)"
-        # the kernel's side: where the drivers are kept (xnu/files/ until they moved to drivers/<subsystem>/) and the Linux layer
-        if f.startswith(("xnu/", "drivers/", "wifi/lx/src/")):
+        # the kernel's side: where the drivers are kept (xnu/files/ until they moved to drivers/<subsystem>/),
+        # a device's own drivers (devices/<name>/drivers/), and the Linux layer
+        if f.startswith(("xnu/", "drivers/", "devices/", "wifi/lx/src/")):
             for m in KERNEL.finditer(text):
                 found[m.group(1)]["kernel"].add(base)
             for m in STRING.finditer(text):
@@ -137,6 +165,8 @@ def scan(root, keep=None):
                 found[m.group(1)]["loader"].add(base)
         if f.startswith("userland/src/"):
             for m in USER.finditer(text):
+                found[m.group(1)]["user"].add(base)
+            for m in HM_ARG.finditer(text):
                 found[m.group(1)]["user"].add(base)
             if BOOT_ARG_DEF.search(text):
                 for m in BOOT_ARG_CALL.finditer(text):
@@ -266,7 +296,8 @@ def markdown(found, config):
         "that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, "
         "`docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change "
         "with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS=\"name=value ...\"`, which checks "
-        "that each name is in this list.",
+        "that each name is in this list. What the arguments of the two Metal paths do: "
+        "[Metal on the Adreno](reference/metal.md#boot-arguments).",
         "",
         "Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl kern.bootargs`).",
         "",

@@ -1,6 +1,8 @@
 /*
- * The clock speed of the processor cores the kernel runs on, on the POCO X5 Pro (redwood).
- * Only with boot-arg cpufreq=1: the addresses are this phone's.
+ * The clock speed of the processor cores the kernel runs on. Only with boot-arg cpufreq=1.
+ * The register windows are the reference phone's (the POCO X5 Pro, redwood) unless boot-args
+ * epss0=, epss1=, epss2= name this SoC's three groups (the SM8150's are at 0x18323000,
+ * 0x18325800 and 0x18327800; its cores group the same 4+3+1 way, so nothing else changes).
  *
  * The boot loader leaves each group of cores at a modest frequency and expects the operating
  * system to ask for more. On this SoC that is one register write: the hardware ("EPSS") has
@@ -9,7 +11,30 @@
  * top row, for every group that has a core of ours in it (one core, unless boot-arg cpus=N
  * says more).
  *
- * Register layout: Linux drivers/cpufreq/qcom-cpufreq-hw.c ("epss" variant).
+ * Two register layouts, as Linux's drivers/cpufreq/qcom-cpufreq-hw.c has them (qcom_soc_data
+ * and epss_soc_data). The reference phone's EPSS is the newer one ("epss" variant): the table
+ * at +0x100, one word per row, the row wanted at +0x320. The generations from the Kryo-3xx
+ * through the 4xx (SDM845, SM8150, SM8250) are the older one, which Linux calls the plain
+ * cpufreq-hw variant: the rows are 32 bytes apart with the supply voltage in the word next to
+ * the frequency, and the row wanted is asked for far away at +0x920. Boot-arg epss_hw=1 says
+ * this SoC's EPSS is that layout.
+ *
+ * The firmware fills the table before our kernel starts, and leaves the clock low: a read-only
+ * round (cpufreq_look=1, logs/013517-run.log) found all forty rows of all three groups filled
+ * with the vendor's own numbers, 300-1785, 710-2419 and 825-2956 MHz with real per-row
+ * voltages, and the row wanted left at 0 for the golds and the prime. So the only work here
+ * is to ask for the top row. (An earlier round believed the table was empty: it read +0x100,
+ * which in this layout is not where the rows are, and wrote the newer layout's row-wanted
+ * register, which here falls inside the table itself -- and the prime's test thread stopped
+ * making progress, logs/004950-run.log.)
+ *
+ * Other SoCs, or the next unknown one, may really have an empty table, and two boot-args are
+ * there for that: cpufreq_look=1 reads the control registers and every row and says them,
+ * writing nothing, to see where an SoC's rows really are and whether anyone filled them; and
+ * cpufreq_fix=1, when a table really is empty, writes one (the multiples of the crystal up to
+ * what the group's cores are rated for) and then asks for its top row. Without cpufreq_fix an
+ * empty table is only reported: asking for row 0 of nothing is the fixed 300 MHz, a fall and
+ * not a rise, which is what went wrong in that earlier round.
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
@@ -54,14 +79,84 @@ tell(const char *format, ...)
 	}
 }
 
-#define EPSS_PHYS               0x18591000UL    /* three groups ("domains") of 0x1000: small cores, big, biggest */
+#define EPSS_PHYS               0x18591000UL    /* the reference phone: three groups ("domains") of 0x1000,
+                                                 * small cores, big, biggest. Another SoC says where its three
+                                                 * groups are with epss0=, epss1=, epss2=, the way the thermal
+                                                 * driver's ports name their TM blocks (thermal_tm0). */
 #define EPSS_DOMAIN_SIZE        0x1000UL
 #define EPSS_DOMAINS            3
+#define EPSS_ENABLE             0x0             /* bit 0: this group's clock hardware is on (both layouts) */
 #define EPSS_FREQ_TABLE         0x100           /* a word per row: [31:30] clock source, [7:0] multiple of 19.2 MHz */
+#define EPSS_VOLT_TABLE         0x200           /* the same rows' supply voltage: [11:0] millivolts */
 #define EPSS_TABLE_ROWS         40
 #define EPSS_PERF_STATE         0x320           /* the row that is wanted */
+#define EPSS_DCVS               0xb0            /* the hardware's own switching: what it is allowed to do */
+#define EPSS_DOMAIN_STATE       0x20            /* what the hardware is at now: [7:0] a multiple of 19.2 MHz */
+#define EPSS_CURRENT_VOTE       0x704           /* ... the same for the older layout: [9:0] instead of [7:0] */
 #define XO_KHZ                  19200
 #define ALTERNATE_KHZ           300000          /* source 0: a fixed 300 MHz */
+
+/* The older layout, Linux's qcom_soc_data (SDM845 through SM8250, this phone among them): the
+ * rows are 32 bytes apart, the frequency word first and its voltage in the word next to it, and
+ * the row wanted asked for far away at +0x920. Boot-arg epss_hw=1 says this SoC is that one. */
+#define EPSS_HW_FREQ_TABLE      0x110
+#define EPSS_HW_VOLT_TABLE      0x114
+#define EPSS_HW_PERF_STATE      0x920
+#define EPSS_HW_DCVS            0xbc
+#define EPSS_HW_ROW_BYTES       32
+
+/* Where the three groups' registers begin: the reference phone's, unless epss0= ... say otherwise. */
+static uint32_t epss_pa[EPSS_DOMAINS] = {
+	EPSS_PHYS, EPSS_PHYS + EPSS_DOMAIN_SIZE, EPSS_PHYS + 2 * EPSS_DOMAIN_SIZE,
+};
+
+/* The offsets that differ between the two layouts; epss_layout() moves them for epss_hw=1. */
+static uint32_t epss_row_bytes = 4;
+static uint32_t epss_freq_table = EPSS_FREQ_TABLE;
+static uint32_t epss_volt_table = EPSS_VOLT_TABLE;
+static uint32_t epss_perf_state = EPSS_PERF_STATE;
+static uint32_t epss_dcvs = EPSS_DCVS;
+static bool cpufreq_fix;
+
+/* Boot-arg epss_hw=1: the older layout. Everything else is the same registers under other names. */
+static void
+epss_layout(void)
+{
+	uint32_t hw = 0;
+
+	if (!(PE_parse_boot_argn("epss_hw", &hw, sizeof(hw)) && hw)) {
+		return;
+	}
+	epss_row_bytes = EPSS_HW_ROW_BYTES;
+	epss_freq_table = EPSS_HW_FREQ_TABLE;
+	epss_volt_table = EPSS_HW_VOLT_TABLE;
+	epss_perf_state = EPSS_HW_PERF_STATE;
+	epss_dcvs = EPSS_HW_DCVS;
+	tell("cpufreq: the older layout (epss_hw): rows at +%#x, %u bytes apart, the row wanted at +%#x\n", epss_freq_table,
+	    epss_row_bytes, epss_perf_state);
+}
+
+/* The frequency word and the voltage word of one row, in either layout. */
+static volatile uint32_t *
+row_entry(vm_offset_t base, uint32_t row)
+{
+	return (volatile uint32_t *)(base + epss_freq_table + epss_row_bytes * row);
+}
+
+static volatile uint32_t *
+row_voltage(vm_offset_t base, uint32_t row)
+{
+	return (volatile uint32_t *)(base + epss_volt_table + epss_row_bytes * row);
+}
+
+/* What a row means: bits [31:30] pick the clock source and bits [7:0] are a multiple of the
+ * 19.2 MHz crystal; source 0 is the fixed 300 MHz. Bits [18:16] say how many cores may run at
+ * the row (1 is the vendor's "turbo" marker); they change nothing here. */
+static uint32_t
+row_khz(uint32_t entry)
+{
+	return (entry >> 30) ? XO_KHZ * (entry & 0xff) : ALTERNATE_KHZ;
+}
 
 /* How fast a simple loop runs, in thousands of iterations per millisecond. */
 static uint32_t
@@ -86,28 +181,163 @@ domain_of(uint32_t phys_id)
 	return core < 4 ? 0 : core < 7 ? 1 : 2;
 }
 
+/*
+ * cpufreq_fix=1 and the table is empty: write one. The rows are multiples of the crystal from
+ * just above the fixed 300 MHz (a multiple of 16) up to what this group's cores are rated for,
+ * in as few steps as the 40 rows allow, every one at 1100 mV. Where the firmware has filled a
+ * table this never runs (it knows the vendor's steps and voltages, we do not); where it has
+ * not, a row is only a source, a multiple and a millivolt value, and this is what one looks
+ * like. The core-count field is what the hardware's own switching and Linux's table walk read;
+ * we pick the row ourselves, so it says the group's full number of cores. Every row is read
+ * back and the count of mismatches goes to the log; raise_domain() re-reads the table itself
+ * before choosing from it.
+ */
+#define FIX_FIRST_LVAL          16              /* 307.2 MHz: the first multiple above the fixed 300 */
+#define FIX_VOLTAGE_MV          1100            /* above every vendor row: this phone's run 612-1016 */
+static const uint32_t xo_rows[EPSS_DOMAINS] = { 94, 126, 148 };      /* 1804.8, 2419.2, 2841.6 MHz: near this
+                                                                      * SoC's tops, which the firmware's own table
+                                                                      * says are 1785, 2419 and 2956
+                                                                      * (logs/013517-run.log); only a fallback */
+static const uint32_t group_cores[EPSS_DOMAINS] = { 4, 3, 1 };
+
 static void
-raise_domain(uint32_t domain, uint32_t cores)
+write_rows(uint32_t domain, vm_offset_t base)
 {
-	uint32_t top = 0, top_khz = 0, was;
-	vm_offset_t base;
+	const uint32_t last_lval = xo_rows[domain];
+	const uint32_t row_value = (1u << 30) | (group_cores[domain] << 16);
+	uint32_t step = (last_lval - FIX_FIRST_LVAL + EPSS_TABLE_ROWS - 2) / (EPSS_TABLE_ROWS - 1);
+	uint32_t wrote = 0, last = 0, bad = 0;
 
-	base = ml_io_map(EPSS_PHYS + domain * EPSS_DOMAIN_SIZE, EPSS_DOMAIN_SIZE);
 	for (uint32_t row = 0; row < EPSS_TABLE_ROWS; row++) {
-		uint32_t entry = *(volatile uint32_t *)(base + EPSS_FREQ_TABLE + 4 * row);
-		uint32_t khz = (entry >> 30) ? XO_KHZ * (entry & 0xff) : ALTERNATE_KHZ;
+		uint32_t lval = MIN(FIX_FIRST_LVAL + step * row, last_lval);
 
+		if (lval == last) {
+			break;
+		}
+		last = lval;
+		*row_entry(base, row) = row_value | lval;
+		*row_voltage(base, row) = FIX_VOLTAGE_MV;
+		wrote = row + 1;
+	}
+	for (uint32_t row = 0; row < wrote; row++) {
+		uint32_t lval = MIN(FIX_FIRST_LVAL + step * row, last_lval);
+
+		if (*row_entry(base, row) != (row_value | lval) || *row_voltage(base, row) != FIX_VOLTAGE_MV) {
+			bad++;
+		}
+	}
+	tell("cpufreq: group %u: wrote %u rows of the table, %u MHz to %u MHz at %u mV: %s\n", domain, wrote,
+	    XO_KHZ * FIX_FIRST_LVAL / 1000, XO_KHZ * last_lval / 1000, FIX_VOLTAGE_MV,
+	    bad == 0 ? "read back as written" : "READ-BACK WRONG");
+}
+
+/* The last real row of a table: the rows end by repeating their last frequency, so the top is
+ * where the frequency stops rising. *empty says whether the table holds anything at all: row 0
+ * of an empty table is source 0, the fixed 300 MHz, and asking for it is a fall, not a rise. */
+static uint32_t
+top_row(vm_offset_t base, uint32_t *empty)
+{
+	uint32_t top = 0, top_khz = 0, filled = 0;
+
+	for (uint32_t row = 0; row < EPSS_TABLE_ROWS; row++) {
+		uint32_t entry = *row_entry(base, row);
+		uint32_t khz = row_khz(entry);
+
+		if (entry != 0) {
+			filled = 1;
+		}
 		if (row > 0 && khz <= top_khz) {
-			break;                  /* the table ends by repeating its last row */
+			break;
 		}
 		top = row;
 		top_khz = khz;
 	}
-	was = *(volatile uint32_t *)(base + EPSS_PERF_STATE);
-	*(volatile uint32_t *)(base + EPSS_PERF_STATE) = top;
+	*empty = filled == 0;
+	return top;
+}
+
+static void
+raise_domain(uint32_t domain, uint32_t cores)
+{
+	uint32_t top, was, empty;
+	vm_offset_t base;
+
+	base = ml_io_map((vm_offset_t)epss_pa[domain], EPSS_DOMAIN_SIZE);
+	was = *(volatile uint32_t *)(base + EPSS_ENABLE);
+	if ((was & 1) == 0) {
+		tell("cpufreq: group %u: the hardware says its clock is off (enable %#x): leaving it alone\n", domain, was);
+		return;
+	}
+	top = top_row(base, &empty);
+	if (empty) {
+		/* Asking for row 0 of an empty table is what took a test thread down to 300 MHz
+		 * (logs/004950-run.log). */
+		if (!cpufreq_fix) {
+			tell("cpufreq: group %u: the frequency table is empty: not touching it (cpufreq_fix=1 writes one)\n",
+			    domain);
+			return;
+		}
+		write_rows(domain, base);
+		top = top_row(base, &empty);       /* what stuck is what we may ask for */
+		if (empty) {
+			tell("cpufreq: group %u: the table did not take: leaving the clock where it is\n", domain);
+			return;
+		}
+	}
+	was = *(volatile uint32_t *)(base + epss_perf_state);
+	*(volatile uint32_t *)(base + epss_perf_state) = top;
 	delay_for_interval(20, NSEC_PER_MSEC);
 	tell("cpufreq: group %u (%u of our cores): row %u -> %u of the frequency table, %u MHz\n", domain, cores, was, top,
-	    top_khz / 1000);
+	    row_khz(*row_entry(base, top)) / 1000);
+}
+
+/*
+ * Boot-arg cpufreq_look=1: read-only. Every group's control registers, what the hardware says
+ * it is at right now, and every row of its table decoded: to find where an SoC's rows really
+ * are and whether anybody filled them, writing nothing. (The two "right now" registers are the
+ * same fact in the two layouts' places: one of them is the real one and the other reads 0 or
+ * junk.)
+ */
+static void
+look_domain(uint32_t domain)
+{
+	vm_offset_t base = ml_io_map((vm_offset_t)epss_pa[domain], EPSS_DOMAIN_SIZE);
+	uint32_t enable = *(volatile uint32_t *)(base + EPSS_ENABLE);
+	uint32_t state = *(volatile uint32_t *)(base + EPSS_DOMAIN_STATE) & 0xff;
+	uint32_t vote = *(volatile uint32_t *)(base + EPSS_CURRENT_VOTE) & 0x3ff;
+	uint32_t filled = 0, run = 0, run_start = 0;
+
+	tell("cpufreq: group %u at %#x: enable %#x%s, dcvs %#x, the row wanted is %u\n", domain, epss_pa[domain], enable,
+	    enable & 1 ? "" : " (OFF: the hardware says its clock is not on)",
+	    *(volatile uint32_t *)(base + epss_dcvs), *(volatile uint32_t *)(base + epss_perf_state));
+	tell("cpufreq: group %u: the hardware is at %u MHz (+%#x says %#x) and at %u MHz (+%#x says %#x)\n", domain,
+	    XO_KHZ * state / 1000, EPSS_DOMAIN_STATE, state, XO_KHZ * vote / 1000, EPSS_CURRENT_VOTE, vote);
+	for (uint32_t row = 0; row < EPSS_TABLE_ROWS; row++) {
+		uint32_t entry = *row_entry(base, row);
+		uint32_t volt = *row_voltage(base, row) & 0xfff;
+
+		if (entry != 0) {
+			filled++;
+		}
+		if (entry == 0 && volt == 0) {
+			if (run == 0) {
+				run_start = row;
+			}
+			run++;
+			continue;
+		}
+		if (run != 0) {
+			tell("cpufreq: group %u rows %u-%u: empty\n", domain, run_start, run_start + run - 1);
+			run = 0;
+		}
+		tell("cpufreq: group %u row %2u: entry %#010x = %u MHz, %u mV, %u cores%s\n", domain, row, entry,
+		    row_khz(entry) / 1000, volt, (entry >> 16) & 7, ((entry >> 16) & 7) == 1 ? " (turbo)" : "");
+	}
+	if (run != 0) {
+		tell("cpufreq: group %u rows %u-%u: empty\n", domain, run_start, run_start + run - 1);
+	}
+	tell("cpufreq: group %u: %u of %u rows filled%s\n", domain, filled, EPSS_TABLE_ROWS,
+	    filled == 0 ? ": nobody has programmed this table" : "");
 }
 
 /*
@@ -305,10 +535,17 @@ load_start(void)
  * Boot-arg ddr=1: the memory's bus clock managers ("BCM") in the command database the boot loader
  * left, with what is needed to vote for bandwidth on them -- only read. (membench=2 says the cores
  * together get no more from memory than one alone: 12 GB/s; nobody here votes for more.)
+ *
+ * Boot-arg cmdb=PHYS: where this SoC's command database is. The reference phone's is at a fixed
+ * address; this phone's is wherever its firmware put it and its tree only keeps a pointer to it
+ * (qcom,cmd-db@c3f000c), which its touch driver read and found the table at 0x85f20000
+ * (logs/012447-run.log) -- the same table, the same magic, just not at the reference address.
  */
 #define CMD_DB_PHYS             0x80860000UL
 #define CMD_DB_SIZE             0x20000UL
 #define CMD_DB_BCM              5               /* the kind of resource in a slave's id: bus clock managers */
+
+static uint32_t cmd_db_pa = CMD_DB_PHYS;
 
 struct cmd_db_slave {
 	uint16_t id, header_offset, data_offset, count, version, reserved[3];
@@ -345,7 +582,7 @@ static void
 ddr_look(void)
 {
 	/* (memory, not registers: mapped so that reads of any size and alignment are allowed) */
-	const struct cmd_db_header *db = (const struct cmd_db_header *)ml_io_map_wcomb(CMD_DB_PHYS, CMD_DB_SIZE);
+	const struct cmd_db_header *db = (const struct cmd_db_header *)ml_io_map_wcomb(cmd_db_pa, CMD_DB_SIZE);
 
 	if (db->magic[0] != 0xdb || db->magic[1] != 0x30 || db->magic[2] != 0x03 || db->magic[3] != 0x0c) {
 		tell("ddr: no command database\n");
@@ -440,27 +677,35 @@ static bool ddr_voted;
 static uint32_t
 cmd_db_address(const char *name)
 {
-	const struct cmd_db_header *db = (const struct cmd_db_header *)ml_io_map_wcomb(CMD_DB_PHYS, CMD_DB_SIZE);
+	const uint8_t *db = (const uint8_t *)ml_io_map_wcomb(cmd_db_pa, CMD_DB_SIZE);
 	char id[8] = { 0 };
+	uint32_t found = 0, matches = 0;
 
-	if (db->magic[0] != 0xdb || db->magic[1] != 0x30 || db->magic[2] != 0x03 || db->magic[3] != 0x0c) {
+	if (db[4] != 0xdb || db[5] != 0x30 || db[6] != 0x03 || db[7] != 0x0c) {
 		return 0;
 	}
 	strlcpy(id, name, sizeof(id));
-	for (unsigned s = 0; s < 8; s++) {
-		const struct cmd_db_slave *slave = &db->slave[s];
-		const struct cmd_db_entry *entry = (const struct cmd_db_entry *)(db->data + slave->header_offset);
-
-		if (slave->id != CMD_DB_BCM || slave->header_offset >= CMD_DB_SIZE - 0x1000 || slave->count > 512) {
+	/* Walk the table by names, the way this phone's touch driver learned to (its cmdb_look):
+	 * the slave records say where a group of entries begins, but their offsets are from the
+	 * front of the table and not after the header, and which group a manager lands in is the
+	 * firmware's own -- this phone's MC0 sits under one slave id and its ACV under another.
+	 * The name is the one thing that never moves: eight bytes of id-shaped text at the front
+	 * of every entry, the way cmd_db_get_u64_id packs and compares it. The address is the
+	 * word two further on; the word right after the name is 0 for every bus clock manager,
+	 * which is what an earlier reading of this mistook for a missing address. */
+	for (unsigned at = sizeof(struct cmd_db_header); at + 20 <= CMD_DB_SIZE; at += 4) {
+		if (memcmp(db + at, id, sizeof(id)) != 0) {
 			continue;
 		}
-		for (unsigned i = 0; i < slave->count; i++) {
-			if (memcmp(entry[i].id, id, sizeof(id)) == 0) {
-				return entry[i].address;
-			}
+		matches++;
+		if (found == 0) {
+			found = *(const uint32_t *)(db + at + 16);
 		}
 	}
-	return 0;
+	if (matches != 1) {
+		tell("ddr: command database at %#x: %u entries named %s\n", cmd_db_pa, matches, name);
+	}
+	return found;
 }
 
 /* Up to three writes through command slot set 0, and the wait until RPMh has done them (as drivers/input/hakios.goodix.c) */
@@ -560,9 +805,11 @@ void
 hakios_cpufreq_init(void)
 {
 	const ml_topology_info_t *topology = ml_get_topology_info();
-	uint32_t enabled = 0, membench = 0, cores[EPSS_DOMAINS] = { 0 }, before, here;
+	uint32_t enabled = 0, membench = 0, look = 0, fix = 0, cores[EPSS_DOMAINS] = { 0 }, before, here;
 
 	load_start();
+	/* This SoC's command database, when it is not at the reference phone's address. */
+	(void)PE_parse_boot_argn("cmdb", &cmd_db_pa, sizeof(cmd_db_pa));
 	enabled = 2;
 	PE_parse_boot_argn("ddr", &enabled, sizeof(enabled));
 	if (enabled == 1) {
@@ -575,6 +822,20 @@ hakios_cpufreq_init(void)
 	if (!PE_parse_boot_argn("cpufreq", &enabled, sizeof(enabled)) || !enabled) {
 		return;
 	}
+	/* This SoC's three groups, when it is not the reference phone. */
+	(void)PE_parse_boot_argn("epss0", &epss_pa[0], sizeof(epss_pa[0]));
+	(void)PE_parse_boot_argn("epss1", &epss_pa[1], sizeof(epss_pa[1]));
+	(void)PE_parse_boot_argn("epss2", &epss_pa[2], sizeof(epss_pa[2]));
+	epss_layout();
+	/* cpufreq_look=1: read everything, write nothing, and stop: the round that finds where an
+	 * SoC's rows are and whether anybody filled them. */
+	if (PE_parse_boot_argn("cpufreq_look", &look, sizeof(look)) && look) {
+		for (uint32_t domain = 0; domain < EPSS_DOMAINS; domain++) {
+			look_domain(domain);
+		}
+		return;
+	}
+	cpufreq_fix = PE_parse_boot_argn("cpufreq_fix", &fix, sizeof(fix)) && fix != 0;
 	for (unsigned int i = 0; i < topology->num_cpus; i++) {
 		cores[domain_of(topology->cpus[i].phys_id)]++;
 	}
@@ -586,7 +847,7 @@ hakios_cpufreq_init(void)
 			raise_domain(domain, cores[domain]);
 		}
 	}
-	printf("cpufreq: on core %u a loop ran at %u, now at %u\n", here, before, loop_speed());
+	tell("cpufreq: on core %u a loop ran at %u, now at %u\n", here, before, loop_speed());
 	/* membench has its own variable: when the boot-arg is absent, the cpufreq value (2 means on) must not start the benchmark */
 	PE_parse_boot_argn("membench", &membench, sizeof(membench));
 	if (membench == 1) {

@@ -35,7 +35,9 @@ def main():
     nodes = mod.nodes_of(open(args[0], "rb").read())
     phandle_reg = {}
     for path, props in nodes.items():
-        if "compatible" in props and b"qcom,tsens26xx" in props["compatible"] and "phandle" in props:
+        if ("compatible" in props and "phandle" in props and
+                any(c in props["compatible"].split(b"\0") for c in
+                    (b"qcom,tsens24xx", b"qcom,tsens26xx"))):
             reg = cells(props["reg"])             # srot base/size, tm base/size
             phandle_reg[cells(props["phandle"])[0]] = reg[2] if len(reg) >= 4 else reg[0]
     zones = []
@@ -62,15 +64,17 @@ def main():
                 name = name[:-len(suffix)]
         row = sensors.setdefault((tm, sensor), {"name": name, "temps": []})
         row["temps"] += [t for t, _k in trips]
+    # Some zones use low-frequency trips as low as 5 C. Minimum/maximum
+    # across all zones do not establish throttling or shutdown thresholds.
     if "--c" in sys.argv:
         print("/* made by tools/dt-thermal.py from the phone's device tree: sensor, the TSENS block it is in (the address of its")
-        print(" * readings), its number there, the temperature the vendor starts to slow down at, and the one it gives up at,")
-        print(" * in millidegrees */")
+        print(" * readings), its number, and minimum/maximum declared trip temperatures in millidegrees. These are not")
+        print(" * necessarily throttle or shutdown thresholds. */")
         for (tm, sensor), row in sorted(sensors.items(), key=lambda kv: (kv[0][0], kv[0][1])):
             print('	{ "%s", %#x, %u, %d, %d },' % (row["name"], tm, sensor, min(row["temps"]), max(row["temps"])))
     else:
         for (tm, sensor), row in sorted(sensors.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-            print("%-14s tm=%#x sensor=%-2d slow down at %d, gives up at %d" % (row["name"], tm, sensor, min(row["temps"]), max(row["temps"])))
+            print("%-14s tm=%#x sensor=%-2d declared trip range %d..%d mC" % (row["name"], tm, sensor, min(row["temps"]), max(row["temps"])))
 
 
 main()

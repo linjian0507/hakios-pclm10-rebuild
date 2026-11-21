@@ -512,6 +512,7 @@ test_dynamic(void)
 	char program[128];
 	char *argv[] = { program, "from", "init", NULL };
 	char *envp[] = { "PATH=/bin:/usr/bin", "HOME=/", NULL };
+
 	struct stat st;
 	int status = 0;
 	pid_t pid;
@@ -1512,6 +1513,103 @@ configure_vnodes(void)
 	}
 }
 
+static void
+swipe_demo(void)
+{
+	char program[128];
+	char *argv[] = { program, "wait", "100", "notify", "com.hakios.unlock", "wait", "4", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", "swipe", "0.5", "0.85", "0.5", "0.25", "900", "wait", "1.2", "swipe", "0.5", "0.25", "0.5", "0.85", "900", "wait", "1.2", NULL };
+	char *envp[] = { "PATH=/bin:/usr/bin", "HOME=/", NULL };
+	strcpy(program, in_image("/bin/rwtouch"));
+	if (fork() == 0) {
+		execve(program, argv, envp);
+		_exit(127);
+	}
+}
+
+static void
+run_bin(void)
+{
+	char program[128];
+	char wantbuf[64];
+	const char *want = boot_arg("run_bin");
+	const char *when;
+	unsigned secs = 100;
+	char *argv[8];
+	unsigned argc = 0;
+	static char abuf[128];
+	const char *args;
+
+	char *envp[] = { "PATH=/bin:/usr/bin", "HOME=/", NULL };
+	if (want != NULL) {
+		strcpy(wantbuf, want);
+		want = wantbuf;
+	}
+	args = boot_arg("run_bin_args");
+	if (args != NULL) {
+		strcpy(abuf, args);
+	} else {
+		abuf[0] = 0;
+	}
+	when = boot_arg("run_bin_at");
+
+	if (want == NULL || want[0] == 0) {
+		return;
+	}
+	if (when != NULL && when[0] != 0) {
+		unsigned v = 0;
+		const char *p;
+
+		for (p = when; *p >= 48 && *p <= 57; p++) {
+			v = v * 10 + (unsigned)(*p - 48);
+		}
+		if (v > 0) {
+			secs = v;
+		}
+	}
+	strcpy(program, "/redwood");
+	{
+		char *d;
+		const char *s2;
+
+		for (d = program; *d != 0; d++) {
+		}
+		for (s2 = want; *s2 != 0 && d < program + sizeof(program) - 1; s2++) {
+			*d++ = *s2;
+		}
+		*d = 0;
+	}
+	argv[argc++] = program;
+	{
+		char *tok = abuf;
+
+		while (*tok != 0 && argc < 7) {
+			while (*tok == 32) {
+				tok++;
+			}
+			if (*tok == 0) {
+				break;
+			}
+			argv[argc++] = tok;
+			while (*tok != 0 && *tok != 32) {
+				tok++;
+			}
+			if (*tok == 32) {
+				*tok++ = 0;
+			}
+		}
+	}
+	argv[argc] = NULL;
+	printf("run_bin: %s in %u s (%u args)\n", program, secs, argc - 1);
+	if (fork() == 0) {
+		for (unsigned i = 0; i < secs * 10; i++) {
+			usleep(100000);
+		}
+		execve(program, argv, envp);
+		_exit(127);
+	}
+}
+
+
 int
 main(int argc, char **argv, char **envp)
 {
@@ -1555,6 +1653,10 @@ main(int argc, char **argv, char **envp)
 	test_dynamic();
 	test_devices();
 	test_time();
+	run_bin();
+	if (boot_arg("swipe_demo") != NULL) {
+		swipe_demo();
+	}
 
 	printf("\n=== %d checks, %d failed ===\n", checks, failures);
 	/* daemons that do not run as root get the console as their standard error too */

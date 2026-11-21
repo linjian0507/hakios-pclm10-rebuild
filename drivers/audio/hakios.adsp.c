@@ -287,7 +287,7 @@ put(struct block *b, const char *name, uint32_t offset, uint32_t value)
 
 /* ---- the shared memory (hakios.wifi.c, step 1) --------------------------------------------------- */
 
-#define SMEM_PHYS               0x80900000UL
+#define SMEM_PHYS               0x80900000UL    /* the reference device's; this phone's is 0x86000000 (soc.args) -- soc_smem= overrides */
 #define SMEM_SIZE               0x00200000u
 #define SMEM_US                 0
 #define SMEM_ADSP               2               /* dt: qcom,remote-pid of qcom,smp2p-adsp and qcom,glink/adsp */
@@ -328,12 +328,14 @@ struct smem_item {
 #define ITEM_CRASH_REASON       423
 
 static const volatile uint8_t *smem;
+static uint64_t smem_phys = SMEM_PHYS;
 
 static bool
 smem_peek(uint64_t offset, void *to, uint32_t size)
 {
 	if (smem == NULL) {
-		smem = (const volatile uint8_t *)ml_io_map_unmappable(SMEM_PHYS, SMEM_SIZE, VM_WIMG_WCOMB);
+		PE_parse_boot_argn("soc_smem", &smem_phys, sizeof(smem_phys));
+		smem = (const volatile uint8_t *)ml_io_map_unmappable((vm_offset_t)smem_phys, SMEM_SIZE, VM_WIMG_WCOMB);
 	}
 	if (offset + size > SMEM_SIZE) {
 		return false;
@@ -626,6 +628,7 @@ static struct block aoss = { "mailbox", 0x0c300000, 0x400 };
 #define IPCC_SMP2P              2u
 
 static struct block ipcc = { "ipcc", 0x00408000, 0x1000 };
+static struct block aop_irq = { "aop irq", 0x17c0000c, 4 };    /* qcom,qmp-aop's irq-reg-base */
 
 static struct {
 	uint32_t glink, smp2p, said;
@@ -664,19 +667,34 @@ static uint32_t our_box;                /* where in the message memory our mailb
 static bool
 mailbox_wait(uint32_t offset, uint32_t value, uint32_t ms)
 {
-	for (uint32_t i = 0; i < ms * 10; i++) {
+	uint64_t interval = 0, deadline;
+
+	/*
+	 * Time, not iterations: delay_for_interval() blocks and the scheduler's tick is about 7.5 ms,
+	 * so ms*10 sleeps of 100 us took about 75 times the time asked for -- the SLPI driver's
+	 * "one second" waits measured 75 s of kernel time on 2026-11-03 (logs/121318-run.log). One
+	 * tick per poll against mach_absolute_time() is a real deadline.
+	 */
+	clock_interval_to_absolutetime_interval(ms, NSEC_PER_MSEC, &interval);
+	deadline = mach_absolute_time() + interval;
+	for (;;) {
 		if (rd(aoss.base + offset) == value) {
 			return true;
 		}
-		sleep_us(100);
+		if (mach_absolute_time() >= deadline) {
+			return rd(aoss.base + offset) == value;
+		}
+		delay_for_interval(1, NSEC_PER_MSEC);
 	}
-	return rd(aoss.base + offset) == value;
 }
 
 static void
 ring_aop(void)
 {
-	wr(ipcc.base + IPCC_SEND, IPCC_AOP << 16 | 0);
+	/* Not IPCC: the always-on processor's doorbell is the qmp-aop node's second reg (0x17c0000c,
+	 * qcom,irq-mask = 1), written and never read, exactly as the SLPI driver does it. */
+	need(&aop_irq);
+	wr(aop_irq.base, 1);
 }
 
 /* Linux's qmp_open(), as hakios.wifi.c does it; what is done already is found done. Under the mailbox's lock. */
@@ -1428,6 +1446,11 @@ step_header(void)
 		printf("adsp: %u: the DSP has left nothing in the shared memory: it has not run since the phone was started\n", step);
 	}
 
+	announce("tell the always-on processor that the image is on its way, as pil_boot() does before it asks TrustZone "
+	    "anything (peripheral-loader.c:1356), not after the load");
+	if (!mailbox_send("{class: image, res: load_state, name: adsp, val: on}")) {
+		return false;
+	}
 	announce("hand the image's header to TrustZone to check its signature (image 1), in a page of ours");
 	if (kmem_alloc(kernel_map, &page, PAGE_SIZE, KMA_KOBJECT | KMA_ZERO | KMA_DATA, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
 		printf("adsp: %u: no memory\n", step);
@@ -1684,12 +1707,8 @@ step_start(void)
 		return false;
 	}
 	rails_asked = true;
-	if (!mailbox_send("{class: image, res: load_state, name: adsp, val: on}")) {
-		rails(0);
-		rails_asked = false;
-		lck_mtx_unlock(&dsp_lock);
-		return false;
-	}
+	/* "on" went to the always-on processor in step_header, before TrustZone was asked anything
+	 * (the vendor's pil_boot order); the failure path below still sends "off". */
 	result = scm("to authenticate the audio DSP's image and start it", SCM_PAS_AUTH_AND_RESET, SCM_ONE_VALUE, PAS_ADSP, 0, 0,
 	    &answer);
 	doorbell.since = started = now_us();

@@ -4,6 +4,10 @@
  *
  * usage: net_test STEP...
  *   show                  the interfaces and their addresses, as the kernel has them
+ *   loop                  the stack to itself: a listening socket and a connect on 127.0.0.1,
+ *                         four bytes out and four back. Nothing but the kernel's own BSD stack
+ *                         and if_loop.c can answer this -- no driver, no firmware, no radio --
+ *                         which is why it is M0 of devices/pclm10/notes/wifi.md
  *   store [PATTERN]       what configd has in its dynamic store (default: everything under
  *                         State:/Network and Setup:/Network)
  *   dhcp IF               ask configd's IPConfiguration plugin to configure IF by DHCP
@@ -545,6 +549,60 @@ wrongjoin(void)
 	close(s);
 }
 
+/* ---- loop ------------------------------------------------------------------------------------------ */
+
+/* M0 of devices/pclm10/notes/wifi.md: the stack to itself. The kernel has carried if_loop.c from
+ * its very first boot -- strings finds its own "loopback interface" line in it -- and so far no
+ * program has ever asked it anything. A listener on 127.0.0.1, a connect to it, four bytes out
+ * and four bytes back: no driver, no firmware and no radio can answer that, so what answers is
+ * the route to 127/8, an mbuf, looutput, and the stack's own way back. */
+static void
+loopback_test(void)
+{
+	struct sockaddr_in address = { .sin_len = sizeof(address), .sin_family = AF_INET,
+	    .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+	static const char sent[] = "hak";
+	char answer[16];
+	socklen_t length = sizeof(address);
+	double start = seconds();
+	ssize_t n;
+	int listener, talker, peer;
+
+	listener = socket(AF_INET, SOCK_STREAM, 0);
+	if (listener < 0 || bind(listener, (struct sockaddr *) &address, sizeof(address)) != 0 ||
+	    listen(listener, 1) != 0 ||
+	    getsockname(listener, (struct sockaddr *) &address, &length) != 0) {
+		printf("net_test: loop: no listening socket on 127.0.0.1: %s\n", strerror(errno));
+		return;
+	}
+	talker = socket(AF_INET, SOCK_STREAM, 0);
+	if (talker < 0 || connect(talker, (struct sockaddr *) &address, sizeof(address)) != 0) {
+		printf("net_test: loop: connect to 127.0.0.1 port %u: %s (after %.2f s)\n",
+		    ntohs(address.sin_port), strerror(errno), seconds() - start);
+		return;
+	}
+	/* The connect is over before the accept is asked for: the listen queue holds the
+	 * completed one, and this program has one thread. */
+	peer = accept(listener, NULL, NULL);
+	if (peer < 0) {
+		printf("net_test: loop: connect came and accept did not: %s\n", strerror(errno));
+		return;
+	}
+	write(talker, sent, sizeof(sent));
+	n = read(peer, answer, sizeof(answer));
+	printf("net_test: loop: 127.0.0.1 port %u: connected in %.2f s, ", ntohs(address.sin_port),
+	    seconds() - start);
+	if (n != (ssize_t) sizeof(sent) || memcmp(answer, sent, sizeof(sent)) != 0) {
+		printf("%zd bytes back, not the three that went\n", n);
+	} else {
+		printf("the three bytes that went came back: the loopback path, and with it the "
+		    "whole BSD stack on this kernel, answers\n");
+	}
+	close(peer);
+	close(talker);
+	close(listener);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -555,6 +613,8 @@ main(int argc, char **argv)
 
 			if (strcmp(step, "show") == 0) {
 				show(NULL, false);
+			} else if (strcmp(step, "loop") == 0) {
+				loopback_test();
 			} else if (strcmp(step, "store") == 0) {
 				store(i + 1 < argc && strchr(argv[i + 1], ':') != NULL ? argv[++i] : NULL);
 			} else if (strcmp(step, "dhcp") == 0 && i + 1 < argc) {

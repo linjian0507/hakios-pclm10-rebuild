@@ -44,6 +44,7 @@
  *   thermal_poll=<ms>  how often (200 to 60000; 2000)
  *   thermal_log=<s>    a summary line this often (0: only on a rise; 60)
  *   thermal_stop=<C>   stop the run at this temperature (0: never; 105)
+ *   thermal_pclm10=1   select the PCLM10 device-tree sensor names and all 28 indices
  *   thermal_tm0=<pa>, thermal_tm1=<pa>  the two blocks' readings, when this is not the reference phone
  *                      (0xc263000 and 0xc265000)
  */
@@ -97,7 +98,7 @@ static const struct sensor_info {
 	uint32_t        number;
 	int32_t         slow_mc;
 	int32_t         limit_mc;
-} sensors[] = {
+} reference_sensors[] = {
 	{ "aoss-0", 0xc263000, 0, 115000, 125000 },
 	{ "cpu-0-0", 0xc263000, 1, 110000, 125000 },
 	{ "cpu-0-1", 0xc263000, 2, 110000, 125000 },
@@ -126,13 +127,34 @@ static const struct sensor_info {
 	{ "mdmss-3", 0xc265000, 10, 95000, 125000 },
 	{ "camera-0", 0xc265000, 11, 100000, 125000 },
 };
-#define NSENSORS        ((unsigned)(sizeof(sensors) / sizeof(sensors[0])))
+/* PCLM10: sensor names and indices from its merged device tree. Trip fields
+ * are not used by this driver and are deliberately unspecified here. */
+static const struct sensor_info pclm10_sensors[] = {
+	{ "aoss0", 0xc263000, 0, 0, 0 },
+	{ "cpu-0-0", 0xc263000, 1, 0, 0 }, { "cpu-0-1", 0xc263000, 2, 0, 0 },
+	{ "cpu-0-2", 0xc263000, 3, 0, 0 }, { "cpu-0-3", 0xc263000, 4, 0, 0 },
+	{ "cpuss-0", 0xc263000, 5, 0, 0 }, { "cpuss-1", 0xc263000, 6, 0, 0 },
+	{ "cpu-1-0", 0xc263000, 7, 0, 0 }, { "cpu-1-1", 0xc263000, 8, 0, 0 },
+	{ "cpu-1-2", 0xc263000, 9, 0, 0 }, { "cpu-1-3", 0xc263000, 10, 0, 0 },
+	{ "cpu-1-4", 0xc263000, 11, 0, 0 }, { "cpu-1-5", 0xc263000, 12, 0, 0 },
+	{ "cpu-1-6", 0xc263000, 13, 0, 0 }, { "cpu-1-7", 0xc263000, 14, 0, 0 },
+	{ "gpuss-0", 0xc263000, 15, 0, 0 }, { "aoss-1", 0xc265000, 0, 0, 0 },
+	{ "cwlan", 0xc265000, 1, 0, 0 }, { "video", 0xc265000, 2, 0, 0 },
+	{ "ddr", 0xc265000, 3, 0, 0 }, { "q6-hvx", 0xc265000, 4, 0, 0 },
+	{ "camera", 0xc265000, 5, 0, 0 }, { "cmpss", 0xc265000, 6, 0, 0 },
+	{ "mdm-core", 0xc265000, 7, 0, 0 }, { "npu", 0xc265000, 8, 0, 0 },
+	{ "mdm-vec", 0xc265000, 9, 0, 0 }, { "mdm-scl", 0xc265000, 10, 0, 0 },
+	{ "gpuss-1", 0xc265000, 11, 0, 0 },
+};
+#define MAX_SENSORS 28
+static const struct sensor_info *sensors = reference_sensors;
+static unsigned nsensors = sizeof(reference_sensors) / sizeof(reference_sensors[0]);
 #define REFERENCE_TM0   0xc263000u
 #define REFERENCE_TM1   0xc265000u
 
 static vm_offset_t tm_va[2];
 static uint32_t tm_pa[2] = { REFERENCE_TM0, REFERENCE_TM1 };
-static int32_t tenths[NSENSORS];                /* the last good reading; INT32_MIN: none yet */
+static int32_t tenths[MAX_SENSORS];             /* INT32_MIN: none yet */
 static uint32_t poll_ms = 2000, log_seconds = 60, stop_celsius = 105;
 static uint64_t last_log, reads;
 static int strikes, last_step;
@@ -140,7 +162,7 @@ static bool stopping;
 
 static int thermal_max_mc = -273000;
 static char thermal_hottest[16] = "";
-static char thermal_list[NSENSORS * 16 + 8];
+static char thermal_list[MAX_SENSORS * 16 + 8];
 static int thermal_reads_value;
 
 SYSCTL_INT(_kern_hakios, OID_AUTO, thermal_max_mc, CTLFLAG_RD | CTLFLAG_LOCKED, &thermal_max_mc, 0,
@@ -175,7 +197,7 @@ look(void)
 	char list[sizeof(thermal_list)], one[16];
 
 	list[0] = 0;
-	for (unsigned i = 0; i < NSENSORS; i++) {
+	for (unsigned i = 0; i < nsensors; i++) {
 		uint32_t status = *(volatile uint32_t *)(tm_va[sensors[i].tm == REFERENCE_TM0 ? 0 : 1] + TM_STATUS(sensors[i].number));
 		int32_t value = (int32_t)(status << 20) >> 20;
 
@@ -199,6 +221,13 @@ look(void)
 	reads++;
 	thermal_reads_value = (int)reads;
 	if (good == 0) {
+		/* Do not expose a stale reading as if this poll succeeded.  This is not
+		 * a fail-safe shutdown: report loss explicitly to the operator. */
+		thermal_max_mc = -273000;
+		thermal_hottest[0] = 0;
+		thermal_list[0] = 0;
+		strikes = 0;
+		say("thermal: no valid sensors; temperature and automatic stop are unavailable\n");
 		return;
 	}
 	strlcpy(thermal_list, list, sizeof(thermal_list));
@@ -212,7 +241,7 @@ look(void)
 	seconds /= NSEC_PER_SEC;
 	if (step > last_step || last_log == 0 || (log_seconds != 0 && seconds >= log_seconds)) {
 		text_of(one, sizeof(one), hottest);
-		say("thermal: %u of %u sensors read; hottest %s at %s C; %s\n", good, NSENSORS, sensors[hot].name, one, thermal_list);
+		say("thermal: %u of %u sensors read; hottest %s at %s C; %s\n", good, nsensors, sensors[hot].name, one, thermal_list);
 		last_log = now;
 	}
 	last_step = step;
@@ -254,7 +283,11 @@ thermal_init(void)
 	if (!PE_parse_boot_argn("thermal", &enabled, sizeof(enabled)) || !enabled) {
 		return;
 	}
-	for (unsigned i = 0; i < NSENSORS; i++) {
+	if (PE_parse_boot_argn("thermal_pclm10", &value, sizeof(value)) && value) {
+		sensors = pclm10_sensors;
+		nsensors = sizeof(pclm10_sensors) / sizeof(pclm10_sensors[0]);
+	}
+	for (unsigned i = 0; i < nsensors; i++) {
 		tenths[i] = INT32_MIN;
 	}
 	(void)PE_parse_boot_argn("thermal_tm0", &tm_pa[0], sizeof(tm_pa[0]));
@@ -275,7 +308,7 @@ thermal_init(void)
 			return;
 		}
 	}
-	say("thermal: %u sensors in two blocks (%#x, %#x), every %u ms; stop at %u C%s\n", NSENSORS, tm_pa[0], tm_pa[1], poll_ms,
+	say("thermal: %u sensors in two blocks (%#x, %#x), every %u ms; stop at %u C%s\n", nsensors, tm_pa[0], tm_pa[1], poll_ms,
 	    stop_celsius, stop_celsius ? "" : " (off)");
 	call = thread_call_allocate(tick, NULL);
 	tick(NULL, NULL);

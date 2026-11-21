@@ -2,7 +2,7 @@
 # HakiOS common defconfig: every setting there is, with what it does.
 # Made by tools/hakios-config.py listing common -o <this file>; the values are the ones that file sets, and tests/CI check that it names every symbol.
 #
-# 341 symbols in 18 groups; 34 are set, 25 of them drivers built in.
+# 450 symbols in 18 groups; 35 are set, 33 of them drivers built in.
 #
 
 #
@@ -16,10 +16,10 @@
 # CONFIG_SOC is not set
 
 # "device": options may use firmware pulled from your own phone (fw-*/); "none": the open configuration, nothing of ...
-CONFIG_FIRMWARE="device"
+CONFIG_FIRMWARE="none"
 
 #
-# Drivers built in (25)
+# Drivers built in (34)
 #
 
 # the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's ... [hakios.adsp.c]
@@ -49,7 +49,7 @@ CONFIG_HAKIOS_TORCH=y
 # the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps ... [hakios.socinfo.c]
 CONFIG_HAKIOS_SOCINFO=y
 
-# the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa and the window ... [hakios.adreno.c, hakios.gpu.cpp]
+# the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa, Metal and the ... [hakios.adreno.c, hakios.gpu.cpp]
 CONFIG_HAKIOS_ADRENO=y
 
 # the vibration motor: an Awinic AW86927 driving a linear resonant actuator (haptic=N), its waveforms from fw-haptic/ [hakios.haptic.c]
@@ -97,12 +97,39 @@ CONFIG_HAKIOS_VIRTIO_BLK=y
 # Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made ... [hakios.wifi.c, hakios.wlfw.c, hakios.lx.c, hakios.sta.c, hakios.apple80211.c, hakios.wlan.cpp; requires CONFIG_HAKIOS_QMI]
 CONFIG_HAKIOS_WIFI=y
 
+# the Bluetooth half of this phone's WCN3990: the three RPMh rails the bt_wcn3990 node asks for (ldoa7 1800 mV, ldoc2 ... [hakios.wcnbt.c]
+# CONFIG_HAKIOS_WCNBT is not set
+
+# the flashlight and the cameras of this phone. flash=1 reads the PM8150L flash module at 0xd300 on SPMI slave 5 ... [hakios.flash.c]
+CONFIG_HAKIOS_FLASH=y
+
+# the panel's backlight (wled=1): the PM8150L's WLED module at 0xd800, whose master switch is register 0x46 bit 7. The ... [hakios.wled.c]
+CONFIG_HAKIOS_WLED=y
+
+# the vibration motor of this phone: the PM8150B's HAPC block at 0xc000 on SPMI slave 3, driven open-loop through the ... [hakios.hapc.c, hakios.aw8697.c]
+CONFIG_HAKIOS_HAPC=y
+
+# the SMB5 charger and the gen4 fuel gauge on this phone's PM8150B, read through the PMIC arbiter (smb5=1): which ... [hakios.smb5.c; requires CONFIG_HAKIOS_BATTERY]
+CONFIG_HAKIOS_SMB5=y
+
+# the keys of this phone, read through the PMIC arbiter (pon=1): the power key on the power-on block of its PM8150, ... [hakios.pon.c]
+CONFIG_HAKIOS_PON=y
+
+# the pack's own gauge (bq27541=1): the BQ27541 the overlay puts at 0x55 on the i2c@0xc94000 bus, read by bit-banging ... [hakios.bq27541.c]
+CONFIG_HAKIOS_BQ27541=y
+
+# the touch screen of this phone: a Synaptics S3706 at I2C address 0x20 on serial engine 17 of the second QUP wrapper, ... [hakios.s3706.c]
+CONFIG_HAKIOS_S3706=y
+
+# the SLPI of this phone: its rails, its image, and its Q6 block. slpi=1 lists every resource the boot loader's ... [hakios.slpi.c]
+CONFIG_HAKIOS_SLPI=y
+
 #
-# CPU, memory and boot (21)
+# CPU, memory and boot (28)
 #
 
 # CPU cores the kernel uses, 1 to 8; one if not set
-# CONFIG_CPUS is not set
+CONFIG_CPUS=1
 
 # the core the kernel runs on, 0 to 7; 7 is the biggest core (the loader keeps core 0)
 # CONFIG_BOOTCPU is not set
@@ -116,6 +143,15 @@ CONFIG_HAKIOS_WIFI=y
 # read by the patch to Apple's files (kernel)
 # CONFIG_APPLOG_NAME is not set
 
+# read by hakios.cpufreq.c (kernel)
+# CONFIG_CMDB is not set
+
+# read by hakios.cpufreq.c (kernel)
+# CONFIG_CPUFREQ_FIX is not set
+
+# read-only. Every group's control registers, what the hardware says it is at right now, and every row of its table ...
+# CONFIG_CPUFREQ_LOOK is not set
+
 # every MS milliseconds, how busy each of our cores was meanwhile, in percent, to the loader's log (tools/frames.py ...
 # CONFIG_CPULOAD is not set
 
@@ -127,6 +163,18 @@ CONFIG_HAKIOS_WIFI=y
 
 # read by hakios.cpufreq.c (kernel)
 # CONFIG_DDR_VOTE is not set
+
+# read by hakios.cpufreq.c (kernel)
+# CONFIG_EPSS0 is not set
+
+# read by hakios.cpufreq.c (kernel)
+# CONFIG_EPSS1 is not set
+
+# read by hakios.cpufreq.c (kernel)
+# CONFIG_EPSS2 is not set
+
+# the older layout. Everything else is the same registers under other names.
+# CONFIG_EPSS_HW is not set
 
 # read by GenericARMPE.cpp (kernel)
 # CONFIG_MACHINE_NAME is not set
@@ -169,7 +217,7 @@ CONFIG_HAKIOS_WIFI=y
 #
 
 # the phone's storage: 1 a survey, read only; 2 the loader's block service, through which the kernel reads it (the ...
-CONFIG_UFS=2
+# CONFIG_UFS is not set
 
 # let the kernel write, to the partition `darwin` and nowhere else (writes to the phone's storage: it is the one ... [requires CONFIG_UFS=2]
 # CONFIG_UFS_WRITE is not set
@@ -301,17 +349,38 @@ CONFIG_UFS=2
 # CONFIG_VIRTIO_BLK is not set
 
 #
-# Touch and buttons (8)
+# Touch and buttons (17)
 #
 
 # the touch screen, and the power and volume buttons
-CONFIG_TOUCHSCREEN=y
+# CONFIG_TOUCHSCREEN is not set
 
 # read by hakios.buttons.c (kernel)
 # CONFIG_BUTTONS is not set
 
 # read by hakios.buttons.c (kernel)
 # CONFIG_BUTTONS_STEPS is not set
+
+# read the power and volume down keys through the power-on block
+# CONFIG_PON is not set
+
+# stop after step N
+# CONFIG_PON_STEPS is not set
+
+# a short press of the power key that many seconds after boot, and another ten seconds later, given to Darwin as the ...
+# CONFIG_PRESS_POWER is not set
+
+# read by hakios.buttons.c (kernel)
+# CONFIG_PRESS_POWER_MS is not set
+
+# turn the bus on and read the chip's two product id registers
+# CONFIG_TOUCH is not set
+
+# read by hakios.s3706.c (kernel)
+# CONFIG_TOUCH_2V8 is not set
+
+# read by hakios.s3706.c (kernel)
+# CONFIG_TOUCH_BB is not set
 
 # read by hakios.goodix.c (kernel)
 # CONFIG_TOUCH_FLIP is not set
@@ -325,30 +394,99 @@ CONFIG_TOUCHSCREEN=y
 # the bus at N Hz (Android's device tree gives the chip 5 MHz)
 # CONFIG_TOUCH_SPI_HZ is not set
 
+# stop after step N
+# CONFIG_TOUCH_STEPS is not set
+
+# re-run the sweep that asks every PMIC GPIO which one is the 1.8 V enable
+# CONFIG_TOUCH_SWEEP is not set
+
 # read by hakios.virtio_input.c (kernel)
 # CONFIG_VIRTIO_INPUT is not set
 
 #
-# GPU and display (68)
+# GPU and display (115)
 #
 
 # rendering on Adreno (an image built with GL=1; the GPU's firmware from your phone) [needs fw-gpu/ from the phone]
-CONFIG_GPU=y
+# CONFIG_GPU is not set
 
 # read by hakios.adreno.c (kernel)
 # CONFIG_ADRENO is not set
 
 # read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_APERTURE_CB is not set
+
+# read by hakios.adreno.c (kernel)
 # CONFIG_ADRENO_BLIND is not set
 
 # read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_CLEAR_OOB_PROBE is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_CORE_CB is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_CP_APERTURE is not set
+
+# give the CP the physical addresses of the same pages instead of their GPU IOVAs
+# CONFIG_ADRENO_CP_PHYS is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_DELAY_FIRST is not set
+
+# read by hakios.adreno.c (kernel)
 # CONFIG_ADRENO_DIRTY is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_FAST_OOB_PROBE is not set
 
 # the newest step waits like that before every single access
 # CONFIG_ADRENO_FINE is not set
 
 # read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GFX3D_ON is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GFX3D_SCAN is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GFX3D_SNAPSHOT is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GFX3D_XO is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GMU_CB0 is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GPUCC_BASELINE is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GPUCC_RESTORE is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GX_EARLY is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_GX_GMU_CLOCK_PROBE is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_HALT_OBSERVE is not set
+
+# read by hakios.adreno.c (kernel)
 # CONFIG_ADRENO_KEEP is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_KEEP_SQE_BASE is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_NEW_OOB_ONLY is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_NO_FAL is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_NO_OOB is not set
 
 # step K alone (what steps 6 to 10 need, they check for themselves: within one session of the loader, power and clocks ...
 # CONFIG_ADRENO_ONLY is not set
@@ -356,17 +494,68 @@ CONFIG_GPU=y
 # how long the newest step waits after announcing a group of accesses (default 2200)
 # CONFIG_ADRENO_PAUSE is not set
 
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_PLL0_ON is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_PTBL_PROBE is not set
+
 # when all is over, go back to the loader instead of starting the system
 # CONFIG_ADRENO_RETURN is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_S2CR0_CB is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_SECURE_PT is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_SECVID is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_SHARED_CB is not set
 
 # leave out the steps whose bits are set (bit 2 = step 2)
 # CONFIG_ADRENO_SKIP is not set
 
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_SMR0_FOR_CORE is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_SMR_TEST is not set
+
 # step 17 asks the GMU for the 3D core's Nth speed: 1 315 MHz, 2 450 MHz, 3 550 MHz (the default: the most this ...
 # CONFIG_ADRENO_SPEED is not set
 
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_SPTP_CLOCK is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_SPTP_OFF is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_SQE_PRIV is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_START_FIRST is not set
+
 # step 18 leaves the core's second stream out (0) or gives it an empty context of its own (2): what the SMMU then ...
 # CONFIG_ADRENO_STREAM1 is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_TSB is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_VENDOR_NC is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_VENDOR_PROTECT is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_VENDOR_RPTR is not set
+
+# read by hakios.adreno.c (kernel)
+# CONFIG_ADRENO_WALK is not set
 
 # after the last step, say once a second for S seconds (default 20) that the machine is still alive, and what was ...
 # CONFIG_ADRENO_WATCH is not set
@@ -374,8 +563,14 @@ CONFIG_GPU=y
 # before any step: read what the firmware left the display controller doing (display_probe() below; two clocks are ...
 # CONFIG_DISPLAY_PROBE is not set
 
+# frames written to the panel's memory whenever their beat comes, as before
+# CONFIG_FB_BEAM is not set
+
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_BEAT is not set
+
+# the refresh rate told to CoreAnimation (IOMFBDisplayRefresh) when it is not to be fb_hz's
+# CONFIG_FB_CA_HZ is not set
 
 # which pixels of the panel each frame changed (it costs: the panel's memory is slow to read)
 # CONFIG_FB_DIFF is not set
@@ -385,6 +580,12 @@ CONFIG_GPU=y
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_HZ is not set
+
+# how often the panel is really refreshed
+# CONFIG_FB_MEASURE is not set
+
+# read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FB_PRI is not set
 
 # read by MiniIOMobileFramebuffer.cpp (kernel)
 # CONFIG_FB_QUEUE is not set
@@ -397,6 +598,9 @@ CONFIG_GPU=y
 
 # the same 375 x 812 points drawn at two pixels a point instead of three
 # CONFIG_FBSCALE is not set
+
+# read by MiniIOMobileFramebuffer.cpp (kernel)
+# CONFIG_FBSUBTYPE is not set
 
 # log the first N calls of every selector (default 3)
 # CONFIG_FBTRACE is not set
@@ -435,6 +639,9 @@ CONFIG_GPU=y
 # CONFIG_GLPRECISION is not set
 
 # read by eagl.c (user space)
+# CONFIG_GLPROF is not set
+
+# read by eagl.c (user space)
 # CONFIG_GLSHADERS is not set
 
 # the first texture of that size there is (names are handed out afresh every run)
@@ -451,6 +658,9 @@ CONFIG_GPU=y
 
 # read by eagl.c (user space)
 # CONFIG_GLSLOW is not set
+
+# read by eagl.c (user space)
+# CONFIG_GLSTILL is not set
 
 # read by eagl.c (user space)
 # CONFIG_GLSYNC is not set
@@ -503,6 +713,9 @@ CONFIG_GPU=y
 # read by hakios.adreno.c (kernel)
 # CONFIG_GPU_LOG is not set
 
+# read by hakios.adreno.c (kernel)
+# CONFIG_GPU_PROBE is not set
+
 # only the program metal_test (userland/src/metal_test.m): the safe level, for seeing what Metal does with the device
 # CONFIG_METAL is not set
 
@@ -524,6 +737,9 @@ CONFIG_GPU=y
 # kept memory is given out as it is (to see what the clearing costs; a surface is then not all zeroes)
 # CONFIG_SURF_CLEAR is not set
 
+# surfaces around the client's pictures refused, as before methodWrapClientImage (for comparing)
+# CONFIG_SURF_WRAP is not set
+
 # log the first N surfaces created (default 24)
 # CONFIG_SURFTRACE is not set
 
@@ -537,14 +753,14 @@ CONFIG_GPU=y
 # CONFIG_VBLUR is not set
 
 #
-# Audio and battery (32)
+# Audio and battery (34)
 #
 
 # the audio DSP; the battery level in the UI and charging state come through it [needs fw-audio/ from the phone]
-CONFIG_ADSP=y
+# CONFIG_ADSP is not set
 
 # the speakers (4 is what the README's phone line uses) [needs fw-audio/ from the phone] [requires CONFIG_ADSP]
-CONFIG_SOUND=4
+# CONFIG_SOUND is not set
 
 # the microphone (4 is what the README's phone line uses) [needs fw-audio/ from the phone] [requires CONFIG_ADSP]
 # CONFIG_MIC is not set
@@ -615,6 +831,12 @@ CONFIG_SOUND=4
 # read by hakios.audio.c (kernel)
 # CONFIG_REC_SOUND_MIC is not set
 
+# read and report, every 5 seconds
+# CONFIG_SMB5 is not set
+
+# every N seconds instead (2 at the least)
+# CONFIG_SMB5_SECONDS is not set
+
 # read by hakios.sound.c (kernel)
 # CONFIG_SOUND_BELOW is not set
 
@@ -641,7 +863,7 @@ CONFIG_SOUND=4
 #
 
 # Wi-Fi: the radio, its driver, a connection (also fw-wifi/mac and fw-wifi/network) [needs fw-wifi/ from the phone]
-CONFIG_WIFI=y
+# CONFIG_WIFI is not set
 
 # start the DSP although the one before it was shut down without having acknowledged a stop: THAT HAS RESET THE PHONE, ...
 # CONFIG_WIFI_AGAIN is not set
@@ -738,10 +960,10 @@ CONFIG_WIFI=y
 #
 
 # the modem beside the system: its firmware, file systems, IPA, SIM, NAS [needs fw-modem/ from the phone] [requires CONFIG_UFS=2]
-CONFIG_MODEM=y
+# CONFIG_MODEM is not set
 
 # start the modem although a kernel before this one left it shut down [requires CONFIG_MODEM]
-CONFIG_MODEM_AGAIN=y
+# CONFIG_MODEM_AGAIN is not set
 
 # the modem's RMTFS buffer, an address below 4 GB (0xa8000000 on the reference phone) [requires CONFIG_MODEM]
 # CONFIG_MODEM_BUFFER is not set
@@ -959,7 +1181,7 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_TORCH_SECS is not set
 
 #
-# Chip, thermal and PMIC (10)
+# Chip, thermal and PMIC (11)
 #
 
 # read the chip's identity from the firmware's shared memory: kern.hakios.soc_* (SoC number, revision, board)
@@ -985,6 +1207,9 @@ CONFIG_MODEM_AGAIN=y
 
 # a summary line this often (0: only on a rise; 60)
 # CONFIG_THERMAL_LOG is not set
+
+# select the PCLM10 device-tree sensor names and all 28 indices
+# CONFIG_THERMAL_PCLM10 is not set
 
 # read by hakios.thermal.c (kernel)
 # CONFIG_THERMAL_TM0 is not set
@@ -1051,11 +1276,26 @@ CONFIG_MODEM_AGAIN=y
 # CONFIG_UFS_PROBE is not set
 
 #
-# User space (13)
+# User space (47)
 #
+
+# read by pe_init.c (kernel)
+# CONFIG__NOPROGRESS is not set
+
+# read by pe_init.c (kernel)
+# CONFIG__PROGRESS is not set
+
+# read by pe_init.c (kernel)
+# CONFIG__RESTORE is not set
 
 # read by inject_sb.c (user space)
 # CONFIG_AUTOUNLOCK is not set
+
+# reset, identify, play the vendor's continuous mode for a second, stop
+# CONFIG_AW8697 is not set
+
+# read by hakios.bq27541.c (kernel)
+# CONFIG_BQ27541 is not set
 
 # read by hakios.bt.c (kernel)
 # CONFIG_BT is not set
@@ -1063,14 +1303,26 @@ CONFIG_MODEM_AGAIN=y
 # the second look this many seconds later (0: no second look; 30)
 # CONFIG_BT_AGAIN is not set
 
+# read by inject.c (user space)
+# CONFIG_CA_METALLIB is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_CA_PROF is not set
+
 # CoreAnimation's frame clock from the display driver's refresh notifications
 # CONFIG_CA_VBL is not set
 
-# read by inject.c (user space)
+# CoreAnimation's switches here as in the window server (inject.c), set before QuartzCore reads them
 # CONFIG_CAENV is not set
 
 # read by inject_sb.c (user space)
 # CONFIG_CC_FADE is not set
+
+# only LED 1, left lit; flash=7: only LED 2 -- for naming the wired channel
+# CONFIG_FLASH is not set
+
+# read by gic_v3_irq.c (kernel)
+# CONFIG_GIC_TIMER_PPI is not set
 
 # not even with a GPU; gl=1: also without one, by Mesa's software driver (slow; for working on eagl.c in QEMU)
 # CONFIG_GL is not set
@@ -1087,11 +1339,86 @@ CONFIG_MODEM_AGAIN=y
 # the renderer is made to answer that it has those functions after all
 # CONFIG_GLYES is not set
 
+# read by hakios.hapc.c (kernel)
+# CONFIG_HAPC is not set
+
+# Turnip's GPU trace of every render pass (u_trace) into a file, printed during the run
+# CONFIG_M2V_UTRACE is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_METAL_ALL is not set
+
+# this queue's command buffers recorded by a thread of hakios-metal's own (deferred recording), so that the window ...
+# CONFIG_METAL_DEFER is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_METAL_DUMP is not set
+
+# each draw of a sysmem pass timed alone, by program (only sysmem passes are: without metal_gmem=1)
+# CONFIG_METAL_FPS is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_METAL_GMEM is not set
+
+# GMEM for a pass whose like had at least N draws in the frame before (hakios_metal_cb_set_gmem_min_draws), sysmem for ...
+# CONFIG_METAL_GMEM_DRAWS is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_METAL_GMEM_OFF is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_METAL_LUMA_BOOST is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_METAL_M2V is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_METAL_SKIP is not set
+
+# read by HakiosMetalCA.m (user space)
+# CONFIG_METAL_TRACE is not set
+
+# read by inject.c (user space)
+# CONFIG_METAL_WATCH is not set
+
 # the root is to be the Darwin root volume on /dev/DEV -- the phone's flash, read only
 # CONFIG_ROOT_APFS is not set
 
+# the mailbox is left alone and TrustZone is asked directly
+# CONFIG_SLPI is not set
+
+# read by hakios.slpi.c (kernel)
+# CONFIG_SLPI_BASE is not set
+
+# read by hakios.slpi.c (kernel)
+# CONFIG_SLPI_WAIT is not set
+
 # read by inject_sb.c (user space)
 # CONFIG_SWITCHER_WALLPAPER is not set
+
+# Turnip's TU_DEBUG in the window server (sysmem, gmem, forcebin, ...)
+# CONFIG_TU_DEBUG is not set
+
+# the system's own "Reduce Transparency" and "Reduce Motion" (Settings, Accessibility), for this
+# CONFIG_UI_LITE is not set
+
+# read by init.c (user space)
+# CONFIG_VAR_HFS is not set
+
+# the window that shows the wallpaper rasterized by the window server (CALayer's shouldRasterize), drawn from one ...
+# CONFIG_WALLPAPER_CACHE is not set
+
+# the wallpaper as one still picture
+# CONFIG_WALLPAPER_FREEZE is not set
+
+# the sequence above, ending with the chip's version
+# CONFIG_WCNBT is not set
+
+# read by hakios.wled.c (kernel)
+# CONFIG_WLED is not set
+
+# read by hakios.wled.c (kernel)
+# CONFIG_WLED_TEST is not set
 
 #
 # Extra arguments (1)

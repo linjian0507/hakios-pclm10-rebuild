@@ -59,11 +59,16 @@ FILES = {
     # kernel: Wi-Fi, through the helper and through the Linux layer
     "drivers/wifi/hakios.wifi.c": 'void h(void) { hakios_wifi_option("k_wifi_helper"); }\n',
     "wifi/lx/src/lx_bus.c": 'void i(void) { if (lx_os_option("k_wifi_lx")) {} }\n',
+    # a device's own driver: devices/<name>/ is a repository of its own (devices/manifest.conf), so these
+    # files are not in git ls-files; the scan must find them anyway (device_files)
+    ".gitignore": "/devices/*\n",
+    "devices/testphone/drivers/touch/hakios.nt36672.c": 'void o(void) { PE_parse_boot_argn("d_device", &v, sizeof(v)); }\n',
     # the loader
     "xnuloader/loader.c": 'static void j(const char *c) { if (starts_with(c, "l_arg=") || starts_with(c, "ku_both=")) {} }\n',
     # user space: strstr on the kern.bootargs buffer, and its own boot_arg() helper
     "userland/src/eagl.c": 'void k(char *arguments) { strstr(arguments, "u_strstr=1"); strstr(arguments, "ku_both="); }\n',
     "userland/src/init.c": 'static const char *\nboot_arg(const char *name)\n{ return 0; }\nvoid m(void) { boot_arg("u_helper"); }\n',
+    "userland/src/HakiosMetalCA.m": 'void hm(void) { if (hm_boot_arg_set("u_hm_helper=1")) {} }\n',
     # the kernel also reads ku_both
     "drivers/net/hakios.net.c": 'void n(void) { PE_parse_boot_argn("ku_both", &v, 4); }\n',
     # NOT arguments: must not be found
@@ -77,12 +82,13 @@ d = repo(FILES)
 try:
     got = found(d)
     for name, layers in (("k_direct", "k"), ("k_string", "k"), ("k_tunable", "k"), ("k_writeable", "k"), ("k_wrapped", "k"),
-                         ("k_wifi_helper", "k"), ("k_wifi_lx", "k"), ("l_arg", "l"), ("u_strstr", "u"), ("u_helper", "u"),
+                         ("k_wifi_helper", "k"), ("k_wifi_lx", "k"), ("l_arg", "l"), ("u_strstr", "u"), ("u_helper", "u"), ("u_hm_helper", "u"),
                          ("ku_both", "klu")):
         check("found: %-14s layers %s" % (name, layers), got.get(name) == layers, "got %r" % got.get(name))
     for name in ("not_k_no_definition", "adreno_zap", "metadata", "not_u_other", "not_k_dt", "name", "arguments"):
         check("NOT found: %s" % name, name not in got, "it is in the catalogue as %r" % got.get(name))
     check("drivers/ is scanned as well as xnu/files/", "k_tunable" in got)
+    check("a device's own driver is scanned although devices/ is not tracked here", "d_device" in got, "got %r" % sorted(got))
     check("the groups: the GPU file's argument is under GPU and display", "## GPU and display" in run(d, "--markdown").stdout)
     check("the page says which layers read ku_both", "| `ku_both` | KLU |" in run(d, "--markdown").stdout, run(d, "--markdown").stdout[-400:])
 

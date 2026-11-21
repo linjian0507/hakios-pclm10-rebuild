@@ -34,6 +34,7 @@
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <notify.h>
+#include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -906,7 +907,7 @@ input_thread(__unused void *arg)
 	IOHIDEventSystemClientRef client = NULL;
 	IOHIDServiceClientRef screen = NULL, buttons = NULL;
 	struct hakios_touch t;
-	unsigned count = 0, waking = 0;         /* waking: the fingers whose touch went into waking the display */
+	unsigned count = 0;
 	int device;
 
 	pthread_setname_np("redwood input");
@@ -960,18 +961,16 @@ input_thread(__unused void *arg)
 		} else if (t.type == HAKIOS_TOUCH_DOWN && (touch_mode & 0xff) == TOUCH_MODE_WAKE && buttons != NULL) {
 			/*
 			 * The display is off and a tap is to wake it. The lock button is what wakes it here:
-			 * press it for the finger, and keep the rest of this touch to ourselves.
+			 * press it for the finger. The touch is then passed on like any other: this panel's
+			 * backlight belongs to the boot firmware, so the glass was lit all along, and
+			 * swallowing the gesture made the screen look dead until the next tap.
 			 */
 			struct hakios_touch press = { .time = t.time, .type = HAKIOS_BUTTON_DOWN, .finger = HAKIOS_BUTTON_LOCK };
 
 			send_button(buttons, &press);
 			press.type = HAKIOS_BUTTON_UP;
 			send_button(buttons, &press);
-			waking |= 1u << (t.finger & 31);
-		} else if (waking & (1u << (t.finger & 31))) {
-			if (t.type == HAKIOS_TOUCH_UP) {
-				waking &= ~(1u << (t.finger & 31));
-			}
+			send_touch(screen, &t);
 		} else {
 			send_touch(screen, &t);
 			if (touch_latency) {
@@ -1077,6 +1076,89 @@ opengl_es(void)
 	gl_function_refused = (void (*)(unsigned))dlsym(library, "hakios_gl_function_refused");
 }
 
+/*
+ * What CoreAnimation's Metal renderer looks for when it starts (CA::OGL::MetalContext asserts metallib_url != nil:
+ * this image, made for the iPhone X, has no default.metallib in QuartzCore.framework, only default.pipelinelib).
+ * Every NSBundle lookup of a "metallib" or "pipelinelib" resource in the window server is said, with what it found;
+ * boot-arg ca_metallib=PATH answers a lookup of default.metallib that found nothing with PATH.
+ */
+static id (*orig_url_for)(id self, SEL selector, id name, id extension);
+static id (*orig_url_for_in)(id self, SEL selector, id name, id extension, id subdirectory);
+static const char *ca_metallib;
+static unsigned lookups_said;
+
+static const char *
+utf8(id string)
+{
+	return string != NULL ? ((const char *(*)(id, SEL))objc_msgSend)(string, sel_registerName("UTF8String")) : "(nil)";
+}
+
+static id
+metallib_answer(id self, id name, id extension, id found)
+{
+	const char *ext = extension != NULL ? utf8(extension) : "";
+
+	if (strstr(ext, "metallib") == NULL && strstr(ext, "pipelinelib") == NULL) {
+		return found;
+	}
+	if (lookups_said++ < 40) {
+		id path = found != NULL ? ((id (*)(id, SEL))objc_msgSend)(found, sel_registerName("path")) : NULL;
+
+		say("hakios: %s asks bundle %s for %s.%s: %s\n", getprogname(),
+		    utf8(((id (*)(id, SEL))objc_msgSend)(self, sel_registerName("bundlePath"))), utf8(name), ext,
+		    found != NULL ? utf8(path) : "nothing");
+	}
+	if (found == NULL && ca_metallib != NULL && name != NULL && strcmp(utf8(name), "default") == 0 &&
+	    strcmp(ext, "metallib") == 0) {
+		id text = ((id (*)(Class, SEL, const char *))objc_msgSend)(objc_getClass("NSString"),
+		    sel_registerName("stringWithUTF8String:"), ca_metallib);
+
+		return ((id (*)(Class, SEL, id))objc_msgSend)(objc_getClass("NSURL"), sel_registerName("fileURLWithPath:"), text);
+	}
+	return found;
+}
+
+static id
+my_url_for(id self, SEL selector, id name, id extension)
+{
+	return metallib_answer(self, name, extension, orig_url_for(self, selector, name, extension));
+}
+
+static id
+my_url_for_in(id self, SEL selector, id name, id extension, id subdirectory)
+{
+	return metallib_answer(self, name, extension, orig_url_for_in(self, selector, name, extension, subdirectory));
+}
+
+static void
+watch_metallib_lookups(const char *arguments)
+{
+	static char path[256];
+	const char *at = strstr(arguments, "ca_metallib=");
+	Class bundle = objc_getClass("NSBundle");
+	Method two, three;
+
+	if (at != NULL) {
+		size_t length = strcspn(at + 12, " ");
+
+		if (length < sizeof(path)) {
+			memcpy(path, at + 12, length);
+			ca_metallib = path;
+		}
+	}
+	if (bundle == NULL) {
+		return;
+	}
+	if ((two = class_getInstanceMethod(bundle, sel_registerName("URLForResource:withExtension:"))) != NULL) {
+		orig_url_for = (id (*)(id, SEL, id, id))method_setImplementation(two, (IMP)my_url_for);
+	}
+	if ((three = class_getInstanceMethod(bundle, sel_registerName("URLForResource:withExtension:subdirectory:"))) != NULL) {
+		orig_url_for_in = (id (*)(id, SEL, id, id, id))method_setImplementation(three, (IMP)my_url_for_in);
+	}
+	say("hakios: metallib lookups in %s are said%s%s\n", getprogname(), ca_metallib ? "; default.metallib is " : "",
+	    ca_metallib ? ca_metallib : "");
+}
+
 __attribute__((constructor))
 static void
 hakios_init(void)
@@ -1120,9 +1202,19 @@ hakios_init(void)
 			setting[length] = 0;
 			if ((equals = strchr(setting, '=')) != NULL) {
 				*equals = 0;
+				/* a fraction is written 0p25: the boot-arguments lose what follows a "." of a number (0.008 came as 0) */
+				for (char *point = equals + 1; *point != 0; point++) {
+					if (*point == 'p' && point > equals + 1 && point[-1] >= '0' && point[-1] <= '9' && point[1] >= '0' && point[1] <= '9') {
+						*point = '.';
+						break;
+					}
+				}
 				setenv(setting, equals + 1, 1);
 				say("hakios: caenv: %s=%s for the window server\n", setting, equals + 1);
 			}
+		}
+		if (strstr(arguments, "metal_watch=1") != NULL || strstr(arguments, "ca_metallib=") != NULL) {
+			watch_metallib_lookups(arguments);
 		}
 		opengl_es();
 		window_server_fixes();

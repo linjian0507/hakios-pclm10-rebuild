@@ -72,7 +72,9 @@
 
 #define GIC_SGI_SIGNAL          0           /* cpu_signal(): another processor wants this one's attention */
 #define GIC_SGI_STOP            1           /* psci_smp_stop_here(): the system is going back to the boot loader */
-#define GIC_INTID_VTIMER        27          /* EL1 virtual timer PPI */
+#define GIC_INTID_VTIMER        27          /* EL1 virtual timer PPI on a bare board */
+#define GIC_INTID_VTIMER_GUEST  18          /* ... as the phone's device tree numbers it, as a guest of QNX */
+#define GIC_INTID_VTIMER_QNX    19          /* ... and as QNX actually injects it: measured on the phone, 1 Nov 2026 */
 #define GIC_INTID_SPI_MIN       32
 #define GIC_INTID_SPURIOUS_MIN  1020
 #define GIC_SPI_MOST            48          /* attached at a time */
@@ -81,6 +83,19 @@
 static vm_offset_t gicd_base, gicr_base;
 static vm_size_t   gicr_size;
 static vm_offset_t gicr_cpu_base[MAX_CPUS]; /* each processor's redistributor frame */
+
+/*
+ * Which PPI numbers this kernel takes as its timer tick. A bare board's GIC numbers the EL1
+ * virtual timer 27. The phone's own kernel is a guest of Qualcomm's QNX hypervisor, which gives
+ * its guests the timer under other numbers: the phone's device tree spells virtual 18 and
+ * physical 17, but on the phone only 19 actually arrives — with 27 alone, with 18 and 27
+ * together, and with 16 or 17 the kernel never took one tick; enabling 19 booted it all the way
+ * to user space. So all three spellings are enabled and any is taken as a tick — the ones with
+ * no source behind them stay quiet. Boot-arg gic_timer_ppi=N narrows this to that one number,
+ * for experiments.
+ */
+static uint32_t gic_timer_ppi = (1u << GIC_INTID_VTIMER) | (1u << GIC_INTID_VTIMER_GUEST) |
+                                (1u << GIC_INTID_VTIMER_QNX);
 
 /*
  * Acknowledged, not yet EOI'd; 0: none. The signal between processors is interrupt 0 and reads
@@ -310,7 +325,7 @@ gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub
 		}
 		gic_active_iar[cpu] = iar | GIC_IAR_TAKEN;
 
-		if (intid == GIC_INTID_VTIMER) {
+		if (intid < GIC_INTID_SPI_MIN && (gic_timer_ppi & (1u << intid))) {
 			/* same sequence as the FIQ path in sleh_fiq() */
 			getCpuDatap()->cpu_decrementer = -1; /* Large */
 			rtclock_intr(TRUE);
@@ -418,7 +433,12 @@ gic_v3_irq_cpu_init(void)
 {
 	int cpu = cpu_number();
 	vm_offset_t gicr;
-	uint32_t mine = 1u << GIC_INTID_VTIMER;
+	uint32_t only;
+
+	if (PE_parse_boot_argn("gic_timer_ppi", &only, sizeof only) && only < GIC_INTID_SPI_MIN) {
+		gic_timer_ppi = 1u << only;
+	}
+	uint32_t mine = gic_timer_ppi;
 
 	if (gicd_base == 0) {
 		DTEntry entry;
@@ -473,10 +493,12 @@ gic_v3_irq_cpu_init(void)
 		mine |= sgis;
 	}
 
-	/* Virtual timer PPI (and those): Group 1 (IRQ), default priority, enabled */
+	/* The timer PPIs (and those between processors): Group 1 (IRQ), default priority, enabled */
 	gic_write32(gicr + GICR_IGROUPR0, gic_read32(gicr + GICR_IGROUPR0) | mine);
 	gic_write32(gicr + GICR_IGRPMODR0, gic_read32(gicr + GICR_IGRPMODR0) & ~mine);
-	*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_INTID_VTIMER)) = GIC_PRIORITY_DEFAULT;
+	for (uint32_t ppi = gic_timer_ppi; ppi != 0; ppi &= ppi - 1) {
+		*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(__builtin_ctz(ppi))) = GIC_PRIORITY_DEFAULT;
+	}
 	gic_write32(gicr + GICR_ISENABLER0, mine);
 
 	/* Distributor: affinity routing, Group 1 enabled (normally already so) */
@@ -501,8 +523,8 @@ gic_v3_irq_cpu_init(void)
 	__builtin_arm_isb(ISB_SY);
 
 	ml_install_interrupt_handler(NULL, 0, NULL, gic_irq_handler, NULL);
-	kprintf("gic: v3, distributor %p, cpu %d's redistributor %p, virtual timer on PPI %d\n",
-	    (void *)gicd_base, cpu, (void *)gicr, GIC_INTID_VTIMER);
+	kprintf("gic: v3, distributor %p, cpu %d's redistributor %p, timer on PPIs 0x%x\n",
+	    (void *)gicd_base, cpu, (void *)gicr, gic_timer_ppi);
 }
 
 #endif /* GENERIC_GIC_V3_IRQ */
