@@ -119,10 +119,10 @@ index 4b83160780c3..8997af1f0e1b 100644
  include $(MakeInc_rule)
  include $(MakeInc_dir)
 diff --git a/bsd/conf/files b/bsd/conf/files
-index 44274016a4cf..27cccab98c8e 100644
+index 44274016a4cf..48ab1cdf39c1 100644
 --- a/bsd/conf/files
 +++ b/bsd/conf/files
-@@ -109,6 +109,51 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
+@@ -109,6 +109,61 @@ bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
  
  bsd/dev/monotonic.c optional monotonic
@@ -170,11 +170,21 @@ index 44274016a4cf..27cccab98c8e 100644
 +bsd/dev/hakios.lx.c                      optional hakios_wifi
 +bsd/dev/hakios.sta.c                     optional hakios_wifi
 +bsd/dev/hakios.apple80211.c              optional hakios_wifi
++bsd/dev/hakios.wcnbt.c                   optional hakios_wcnbt
++bsd/dev/hakios.flash.c                   optional hakios_flash
++bsd/dev/hakios.wled.c                    optional hakios_wled
++bsd/dev/hakios.hapc.c                    optional hakios_hapc
++bsd/dev/hakios.aw8697.c                  optional hakios_hapc
++bsd/dev/hakios.smb5.c                    optional hakios_smb5
++bsd/dev/hakios.pon.c                     optional hakios_pon
++bsd/dev/hakios.bq27541.c                 optional hakios_bq27541
++bsd/dev/hakios.s3706.c                   optional hakios_s3706
++bsd/dev/hakios.slpi.c                    optional hakios_slpi
 +# end of the HakiOS drivers
  bsd/dev/dev_perfmon.c optional config_perfmon
  
  bsd/libkern/crc32.c			standard
-@@ -155,6 +200,52 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
+@@ -155,6 +210,52 @@ bsd/miscfs/devfs/devfs_vfsops.c		optional devfs
  bsd/miscfs/mockfs/mockfs_fsnode.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vfsops.c	optional mockfs
  bsd/miscfs/mockfs/mockfs_vnops.c	optional mockfs
@@ -227,7 +237,7 @@ index 44274016a4cf..27cccab98c8e 100644
  
  bsd/miscfs/routefs/routefs_ops.c	optional routefs
  
-@@ -361,6 +452,7 @@ bsd/security/audit/audit_syscalls.c		standard
+@@ -361,6 +462,7 @@ bsd/security/audit/audit_syscalls.c		standard
  bsd/security/audit/audit_worker.c		optional config_audit
  
  bsd/pthread/pthread_shims.c		standard
@@ -235,7 +245,7 @@ index 44274016a4cf..27cccab98c8e 100644
  bsd/pthread/pthread_priority.c		standard
  bsd/pthread/pthread_workqueue.c		standard
  
-@@ -383,6 +475,7 @@ bsd/kern/kern_debug.c			standard
+@@ -383,6 +485,7 @@ bsd/kern/kern_debug.c			standard
  bsd/kern/kern_symfile.c			standard
  bsd/kern/kern_descrip.c			standard
  bsd/kern/kern_guarded.c			standard
@@ -3343,6 +3353,45 @@ index 3ad743fc3efb..ce036c5a2c26 100644
  #else
  void
  pe_init_fiq()
+diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
+index c622b4cc84ab..5522faf81a6f 100644
+--- a/pexpert/arm/pe_init.c
++++ b/pexpert/arm/pe_init.c
+@@ -183,6 +183,15 @@ int
+ PE_initialize_console(PE_Video * info, int op)
+ {
+ 	static int last_console = -1;
++/*
++ * HakiOS: MiniIOMobileFramebuffer asks for kPEDisableScreen when it shows the first picture,
++ * and the display is its own from there. A user-space process that opens its display session
++ * (backboardd, SpringBoard) still calls consoleInitialize(kPEReleaseScreen) afterwards, and
++ * that path draws the boot logo over the home screen again -- the gl6 run of Nov 1 showed it
++ * at 31 s past the first frame. Once the screen is disabled, release only records that it was
++ * asked, and re-initializes the screen without the logo.
++ */
++	static int screen_disabled = 0;
+ 
+ 	if (info && (info != &PE_state.video)) {
+ 		info->v_scale = PE_state.video.v_scale;
+@@ -192,6 +201,7 @@ PE_initialize_console(PE_Video * info, int op)
+ 	case kPEDisableScreen:
+ 		initialize_screen(info, op);
+ 		last_console = switch_to_serial_console();
++		screen_disabled = 1;
+ 		kprintf("kPEDisableScreen %d\n", last_console);
+ 		break;
+ 
+@@ -207,6 +217,10 @@ PE_initialize_console(PE_Video * info, int op)
+ 		break;
+ 
+ 	case kPEReleaseScreen:
++		if (screen_disabled) {
++			initialize_screen(info, op);
++			break;
++		}
+ 		/*
+ 		 * we don't show the progress indicator on boot, but want to
+ 		 * show it afterwards.
 diff --git a/pexpert/arm/pe_kprintf.c b/pexpert/arm/pe_kprintf.c
 index 65144c74239c..ab6260d52d84 100644
 --- a/pexpert/arm/pe_kprintf.c

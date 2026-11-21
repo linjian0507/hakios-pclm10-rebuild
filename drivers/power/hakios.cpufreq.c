@@ -256,6 +256,144 @@ top_row(vm_offset_t base, uint32_t *empty)
 	return top;
 }
 
+/*
+ * A governor: the hardware is asked for a row of its table by what the cores are doing, not for
+ * the top row for good. Written once at start-up, the top row is a frequency and a supply voltage
+ * the phone pays for whether or not anything is running (the cores that were 82 C on a screen
+ * that was not changing, logs/ 2026-11-06). Every 100 ms the busiest core says how much of the
+ * table to ask for; a row is only written when it changes.
+ */
+static vm_offset_t gov_base[EPSS_DOMAINS];
+static uint32_t gov_top[EPSS_DOMAINS];
+static uint32_t gov_row[EPSS_DOMAINS];
+
+static uint32_t gov_ticks;
+static int32_t gov_last_mc;
+static uint32_t gov_limit_pct = 100;   /* how much of the table the temperature allows */
+
+extern int32_t hakios_thermal_max_mc(void);   /* hakios.thermal.c: the hottest sensor, millidegrees */
+
+static uint32_t
+gov_row_of(uint32_t d)
+{
+	return d < EPSS_DOMAINS ? (gov_row[d] == ~0u ? 0u : gov_row[d]) : 0u;
+}
+
+static void
+set_row(uint32_t domain, uint32_t row)
+{
+	if (domain >= EPSS_DOMAINS || gov_base[domain] == 0) {
+		return;
+	}
+	if (gov_limit_pct < 100) {
+		uint32_t cap = (uint32_t)((uint64_t)gov_top[domain] * gov_limit_pct / 100u);
+
+		if (row > cap) {
+			row = cap;
+		}
+	}
+	if (row > gov_top[domain]) {
+		row = gov_top[domain];
+	}
+	if (row == gov_row[domain]) {
+		return;
+	}
+	gov_row[domain] = row;
+	*(volatile uint32_t *)(gov_base[domain] + epss_perf_state) = row;
+}
+
+static void
+cpu_gov_thread(void *arg __unused, wait_result_t wr __unused)
+{
+	const ml_topology_info_t *topology = ml_get_topology_info();
+	uint64_t idle_before[MAX_CPUS] = { 0 }, then = mach_absolute_time();
+
+	for (uint32_t d = 0; d < EPSS_DOMAINS; d++) {
+		uint32_t empty = 0;
+
+		if (epss_pa[d] == 0) {
+			continue;
+		}
+		gov_base[d] = ml_io_map((vm_offset_t)epss_pa[d], EPSS_DOMAIN_SIZE);
+		gov_top[d] = top_row(gov_base[d], &empty);
+		gov_row[d] = ~0u;
+		if (empty) {
+			gov_base[d] = 0;
+		}
+	}
+	for (;;) {
+		uint64_t now, dt;
+		unsigned busy_max = 0;
+
+		delay_for_interval(100, NSEC_PER_MSEC);
+		now = mach_absolute_time();
+		dt = now - then;
+		if (dt == 0) {
+			continue;
+		}
+		for (unsigned int i = 0; i < topology->num_cpus && i < MAX_CPUS; i++) {
+			uint64_t idle = 0;
+			unsigned busy;
+
+			if (!ml_cpu_idle_time((int)i, &idle)) {
+				continue;
+			}
+			busy = (idle - idle_before[i]) < dt ? (unsigned)(100 * (dt - (idle - idle_before[i])) / dt) : 0;
+			idle_before[i] = idle;
+			if (busy > busy_max) {
+				busy_max = busy;
+			}
+		}
+		then = now;
+		{
+			int32_t mc = hakios_thermal_max_mc();
+			uint32_t pct;
+
+			gov_last_mc = mc;
+			if (mc >= 78000) {
+				pct = 25;
+			} else if (mc >= 73000) {
+				pct = 45;
+			} else if (mc >= 68000) {
+				pct = 70;
+			} else {
+				pct = 100;
+			}
+			/* (going back up waits until it is 3 C under the step that took it down) */
+			if (pct > gov_limit_pct && mc > 65000) {
+				pct = gov_limit_pct;
+			}
+			if (mc <= -1000) {
+				pct = gov_limit_pct;   /* the sensors did not read: leave the limit as it is */
+			}
+			if (pct != gov_limit_pct) {
+				tell("gov: thermal %d mC: the table is limited to %u%%\n", mc, pct);
+				gov_limit_pct = pct;
+			}
+		}
+		then = now;
+		for (uint32_t d = 0; d < EPSS_DOMAINS; d++) {
+			if (gov_base[d] == 0) {
+				continue;
+			}
+			set_row(d, (uint32_t)((uint64_t)busy_max * gov_top[d] / 100u));
+		}
+		if (++gov_ticks >= 50) {
+			gov_ticks = 0;
+			tell("gov: busy %u%%, rows %u/%u %u/%u %u/%u\n", busy_max,
+			    gov_row_of(0), gov_row_of(1), gov_row_of(2), gov_top[0], gov_top[1], gov_top[2]);
+		}
+	}
+}
+
+static uint32_t cpu_gov_wanted(void)
+{
+	uint32_t on = 1;
+
+	(void)PE_parse_boot_argn("cpufreq_gov", &on, sizeof(on));
+	return on != 0;
+}
+
 static void
 raise_domain(uint32_t domain, uint32_t cores)
 {
@@ -845,6 +983,14 @@ hakios_cpufreq_init(void)
 	for (uint32_t domain = 0; domain < EPSS_DOMAINS; domain++) {
 		if (cores[domain] != 0) {
 			raise_domain(domain, cores[domain]);
+		}
+	}
+
+	if (cpu_gov_wanted()) {
+		thread_t gov_thread;
+
+		if (kernel_thread_start(cpu_gov_thread, NULL, &gov_thread) == KERN_SUCCESS) {
+			thread_deallocate(gov_thread);
 		}
 	}
 	tell("cpufreq: on core %u a loop ran at %u, now at %u\n", here, before, loop_speed());

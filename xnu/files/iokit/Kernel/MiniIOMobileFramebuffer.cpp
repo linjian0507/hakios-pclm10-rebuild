@@ -441,6 +441,117 @@ setNumber(OSDictionary * dict, const char * key, uint64_t value)
  * 60 Hz (boot-arg fb_hz=N: at N), with one colour mode, 8-bit RGB. The identifiers are what "the current mode"
  * (block 0x40) answers with.
  */
+extern "C" void hakios_gpu_wait_stat(uint64_t *waits, uint64_t *waiting);
+
+static void
+sdeProbeOnce(void)
+{
+	uint32_t on = 0;
+	static const uint64_t bases[] = { 0x0ae45000UL, 0x0ae02000UL };
+
+	if (!PE_parse_boot_argn("sde_probe", &on, sizeof(on)) || on == 0) {
+		return;
+	}
+	for (unsigned b = 0; b < 2; b++) {
+		vm_offset_t base = ml_io_map(bases[b], 0x1000);
+		unsigned hits = 0;
+
+		for (unsigned i = 0; i < 200; i++) {
+			uint32_t v = *(volatile uint32_t *)(base + 4 * i);
+
+			if (v >= 0x80000000UL && v < 0xb0000000UL) {
+				IOLog("MiniIOMobileFramebuffer: sde_scan: %#llx +0x%03x = %#x\n", bases[b], 4 * i, v);
+				hits++;
+			}
+		}
+		IOLog("MiniIOMobileFramebuffer: sde_scan: %#llx %u address-like words of 200\n", bases[b], hits);
+	}
+}
+
+
+static void
+intfProbeEach(void)
+{
+	static const uint64_t bases[] = { 0x0ae6b000UL, 0x0ae6b800UL, 0x0ae6c000UL, 0x0ae6c800UL, 0x0ae94000UL };
+	uint32_t on = 0;
+
+	if (!PE_parse_boot_argn("intf_probe", &on, sizeof(on)) || on == 0) {
+		return;
+	}
+	for (unsigned b = 0; b < sizeof(bases) / sizeof(bases[0]); b++) {
+		vm_offset_t base = ml_io_map(bases[b], 0x1000);
+		uint32_t a[256], c[256];
+		unsigned found = 0;
+
+		for (unsigned i = 0; i < 256; i++) {
+			a[i] = *(volatile uint32_t *)(base + 4 * i);
+		}
+		IOSleep(2);
+		for (unsigned i = 0; i < 256; i++) {
+			c[i] = *(volatile uint32_t *)(base + 4 * i);
+		}
+		for (unsigned i = 0; i < 256; i++) {
+			uint32_t d = c[i] - a[i];
+
+			if (a[i] != 0 && c[i] > a[i] && d <= 400) {
+				IOLog("MiniIOMobileFramebuffer: intf_probe: %#llx +0x%03x %u -> %u\n", bases[b], 4 * i, a[i], c[i]);
+				found++;
+			}
+		}
+		if (found != 0) {
+			IOLog("MiniIOMobileFramebuffer: intf_probe: %#llx counting %u\n", bases[b], found);
+		}
+	}
+}
+
+
+
+static void
+intfProbeOnce(void)
+{
+	static int done;
+	uint32_t on = 0;
+	static const uint64_t bases[] = { 0x0ae6b000UL, 0x0ae6b800UL, 0x0ae6c000UL, 0x0ae6c800UL, 0x0ae94000UL };
+
+	if (done != 0) {
+		return;
+	}
+	if (!PE_parse_boot_argn("intf_probe", &on, sizeof(on)) || on == 0) {
+		done = 1;
+		return;
+	}
+	done = 1;
+	for (unsigned b = 0; b < sizeof(bases) / sizeof(bases[0]); b++) {
+		vm_offset_t base = ml_io_map(bases[b], 0x1000);
+		uint32_t first[8];
+		uint32_t a[256], c[256];
+		unsigned found = 0;
+
+		for (unsigned i = 0; i < 8; i++) {
+			first[i] = *(volatile uint32_t *)(base + 4 * i);
+		}
+		IOLog("MiniIOMobileFramebuffer: intf_probe: %#llx: %#x %#x %#x %#x %#x %#x %#x %#x\n", base,
+			    first[0], first[1], first[2], first[3], first[4], first[5], first[6], first[7]);
+		for (unsigned i = 0; i < 256; i++) {
+			a[i] = *(volatile uint32_t *)(base + 4 * i);
+		}
+		IOSleep(2);
+		for (unsigned i = 0; i < 256; i++) {
+			c[i] = *(volatile uint32_t *)(base + 4 * i);
+		}
+		for (unsigned i = 0; i < 256; i++) {
+			uint32_t d = c[i] - a[i];
+
+			if (a[i] != 0 && c[i] > a[i] && d <= 300) {
+				IOLog("MiniIOMobileFramebuffer: intf_probe: %#llx +0x%03x %u -> %u\n", bases[b], 4 * i, a[i], c[i]);
+				found++;
+			}
+		}
+		IOLog("MiniIOMobileFramebuffer: intf_probe: %#llx counting %u\n", bases[b], found);
+	}
+}
+
+
 #define kFBTimingID     1
 #define kFBColorID      1
 
@@ -912,12 +1023,82 @@ IOMobileFramebuffer::beamProbeMain(void * self, wait_result_t result __unused)
 	((IOMobileFramebuffer *) self)->beamProbe();
 }
 
+/* Whether the kernel version string says this SoC: "…-sm8150-…" in hakios_kver. */
+static bool
+beamKverHas(const char *kver, const char *soc)
+{
+	for (const char *p = kver; *p != 0; p++) {
+		const char *a = p;
+		const char *b = soc;
+
+		while (*a != 0 && *b != 0 && *a == *b) {
+			a++;
+			b++;
+		}
+		if (*b == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void
 IOMobileFramebuffer::beamProbe(void)
 {
 	vm_offset_t intf;
 	uint32_t first, frames, line, lines = 0, smallest = ~0u;
 	uint64_t began, ended, until;
+	char kver[96];
+
+	/*
+	 * The interface this probe reads is the SM7325/SC7280's DPU (DPU_INTF1_PAGE). On another SoC that
+	 * address is another block, and reading it faults the bus: the pclm10 (SM8150) was reset 60 s into
+	 * every run with fb_beam=1 (2026-11-05). Where the controller is not the one this probe knows,
+	 * frames stay on their beat -- the probe and the waits behind it are not tried there.
+	 */
+	/*
+	 * Boot-arg intf_probe=1: read-only. The SM8150 SDE's INTF0 is at 0xae6b000 (the phone's own device
+	 * tree, qcom,sde-intf-off = <0x6b000 ...> over 0xae00000): sample every word of its first 0x300
+	 * bytes a millisecond apart and say which ones count, to find the panel's line counter.
+	 */
+	{
+		uint32_t iprobe = 0;
+		if (PE_parse_boot_argn("intf_probe", &iprobe, sizeof(iprobe)) && iprobe != 0) {
+			vm_offset_t i0 = ml_io_map(0x0ae6b000UL, 0x800);
+			uint32_t a[192], b[192], c[192];
+			unsigned found = 0;
+	
+
+			for (unsigned i = 0; i < 192; i++) {
+				a[i] = *(volatile uint32_t *)(i0 + 4 * i);
+			}
+			IOSleep(1);
+			for (unsigned i = 0; i < 192; i++) {
+				b[i] = *(volatile uint32_t *)(i0 + 4 * i);
+			}
+			IOSleep(1);
+			for (unsigned i = 0; i < 192; i++) {
+				c[i] = *(volatile uint32_t *)(i0 + 4 * i);
+			}
+			for (unsigned i = 0; i < 192; i++) {
+				uint32_t d1 = b[i] - a[i], d2 = c[i] - b[i];
+	
+
+				if (a[i] < 8000 && b[i] > a[i] && c[i] > b[i] && d1 <= 200 && d2 <= 200) {
+					IOLog("MiniIOMobileFramebuffer: intf_probe: +0x%03x %u -> %u -> %u\n", 4 * i, a[i], b[i], c[i]);
+					found++;
+				}
+			}
+			IOLog("MiniIOMobileFramebuffer: intf_probe: %u counting words of 192 at 0xae6b000\n", found);
+			return;
+		}
+	}
+
+	if (PE_parse_boot_arg_str("hakios_kver", kver, sizeof(kver)) && beamKverHas(kver, "-sm8150-")) {
+		IOLog("MiniIOMobileFramebuffer: fb_beam: this SoC's display controller is not the one this probe knows: "
+		    "frames stay on their beat\n");
+		return;
+	}
 
 	IOSleep(60000);
 	intf = ml_io_map(DPU_INTF1_PAGE, 0x4000) + DPU_INTF1_OFFSET;
@@ -1497,13 +1678,17 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 
 		absolutetime_to_nanoseconds(fStatDrawing, &drawing);
 		absolutetime_to_nanoseconds(fStatWaiting, &waiting);
-		absolutetime_to_nanoseconds(fStatBeatWait, &beat);
-		IOLog("MiniIOMobileFramebuffer: %u frames in %llu ms (%llu a second), %llu us each in the driver, after %llu us "
+		sdeProbeOnce();
+	absolutetime_to_nanoseconds(fStatBeatWait, &beat);
+	uint64_t gpuWaits = 0, gpuWaiting = 0;
+	hakios_gpu_wait_stat(&gpuWaits, &gpuWaiting);
+	IOLog("MiniIOMobileFramebuffer: %u frames in %llu ms (%llu a second), %llu us each in the driver, after %llu us "
 		    "waiting for the GPU and, %u of them, %llu us for the next refresh; %u swaps waited for the frame before, "
-		    "%u gave up; %u swaps came a refresh late themselves; %u frames drawn again filtered; %u of %u too late for the next scan\n", fStatFrames, nanos / NSEC_PER_MSEC,
+		    "%u gave up; %u swaps came a refresh late themselves; %u frames drawn again filtered; %u of %u too late for the next scan; gpu waits %llu of %llu us; beam %s\n", fStatFrames, nanos / NSEC_PER_MSEC,
 		    fStatFrames * NSEC_PER_SEC / nanos, drawing / fStatFrames / NSEC_PER_USEC,
 		    waiting / fStatFrames / NSEC_PER_USEC, fStatOnBeat, fStatOnBeat ? beat / fStatOnBeat / NSEC_PER_USEC : 0,
-		    fStatHeld, fStatLost, fStatSwapsLate, fStatSettled, fStatScansMissed, fStatScans);
+		    fStatHeld, fStatLost, fStatSwapsLate, fStatSettled, fStatScansMissed, fStatScans, gpuWaits, gpuWaiting / NSEC_PER_USEC,
+	    fBeamIntf != 0 ? "on" : "off (frames written at their beat)");
 		fStatScans = fStatScansMissed = 0;
 		fStatSwapsLate = 0;
 		for (different = 0; different < 8 && fStatSurfaces[different] != 0; different++) {

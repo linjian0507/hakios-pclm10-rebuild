@@ -32,6 +32,7 @@
 #include <IOKit/IOKitKeys.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <IOKit/IOService.h>
+#include <kern/task.h>
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOSubMemoryDescriptor.h>
@@ -193,6 +194,13 @@ static struct {
 } gGPUStat;
 
 /* Wait for the 3D core to be done with submission `fence`; with the lock held, which is let go of while waiting. */
+extern "C" void
+hakios_gpu_wait_stat(uint64_t *waits, uint64_t *waiting)
+{
+	if (waits != NULL) *waits = gGPUStat.waits;
+	if (waiting != NULL) *waiting = gGPUStat.waiting;
+}
+
 static bool
 gpuWait(uint32_t fence, uint64_t milliseconds)
 {
@@ -355,6 +363,10 @@ HakiosGPUStop(void)
 
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
+struct gpu_buffer;
+static struct gpu_buffer * gLastIb;
+static uint32_t gLastIbOffset, gLastIbWords;
+
 struct gpu_buffer {
 	IOMemoryDescriptor *            memory;         /* NULL: this handle is free */
 	uint8_t *                       kernel;         /* where it is in the kernel */
@@ -407,7 +419,8 @@ struct gpu_kept {
 #define GPU_KEPT_BYTES          (160ull << 20)
 #define GPU_KEPT_SECONDS        60              /* a buffer not asked for again in so long is let go */
 #define GPU_KEEP_FROM           (256u << 10)    /* bytes: smaller ones are not worth it */
-static TUNABLE(uint32_t, gGPUKeep, "gpu_keep", 1);      /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
+static TUNABLE(uint32_t, gGPUKeep, "gpu_keep", 1);
+static TUNABLE(uint32_t, gpuIb, "gpu_ib", 0);      /* boot-arg gpu_ib=1: dump each command buffer's first and last words */      /* boot-arg gpu_keep=0 (a test): none kept; gpu_keep=2: kept ones cleared when given again */
 
 class HakiosGPUUserClient : public IOUserClient
 {
@@ -1044,9 +1057,13 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 	hakios_gpu_to_memory(NULL, 0);                 /* (and what was written last is in memory: a barrier) */
 	gGPUStat.flushing += mach_absolute_time() - began;
 	gGPUStat.buffers += request->nr_bos;
+	IOLog("HakiosGPU: submit: %u cmds, %u bos, gpu_ib=%u\n", request->nr_cmds, request->nr_bos, gpuIb);
 	for (uint32_t i = 0; i < request->nr_cmds; i++) {
 		struct gpu_buffer * b = cmds[i].submit_idx < request->nr_bos ? buffer(bos[cmds[i].submit_idx].handle) : NULL;
 
+		if (gpuIb) {
+			IOLog("HakiosGPU: cmd %u: type %u, buf %u, size %u, offset %u\n", i, cmds[i].type, cmds[i].submit_idx, cmds[i].size, cmds[i].submit_offset);
+		}
 		if (cmds[i].type != MSM_SUBMIT_CMD_BUF) {
 			continue;                               /* the other kinds are for a GPU shared between address spaces */
 		}
@@ -1057,8 +1074,45 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 			IOLockUnlock(gGPULock);
 			goto out;
 		}
+		if (i == 0) { gLastIb = b; gLastIbOffset = cmds[i].submit_offset; gLastIbWords = cmds[i].size / 4; }
 		addresses[count] = b->address + cmds[i].submit_offset;
 		words[count++] = cmds[i].size / 4;
+  if (gpuIb) {
+    uint32_t n = cmds[i].size / 4;
+    uint32_t show = n < 64 ? n : 64;
+    IOMemoryMap * map = NULL;
+    uint32_t * w = NULL;
+
+    if (b->kernel != NULL) {
+      w = (uint32_t *)(b->kernel + cmds[i].submit_offset);
+    } else if (b->memory != NULL) {
+      map = b->memory->createMappingInTask(kernel_task, 0, kIODirectionInOut | kIOMapAnywhere);
+      if (map != NULL) {
+        w = (uint32_t *)((uint8_t *) map->getVirtualAddress() + cmds[i].submit_offset);
+      }
+    }
+    if (w != NULL) {
+      char line[600];
+      int at = snprintf(line, sizeof(line), "HakiosGPU: IB %u: %u words at %#llx:", i, n,
+          (unsigned long long) addresses[count - 1]);
+
+      for (uint32_t k = 0; k < show && at > 0 && at < (int) sizeof(line) - 12; k++) {
+        at += snprintf(line + at, sizeof(line) - at, " %08x", w[k]);
+      }
+      IOLog("%s\n", line);
+      if (n > show) {
+        at = snprintf(line, sizeof(line), "HakiosGPU: IB %u tail:", i);
+        for (uint32_t k = n - show; k < n && at > 0 && at < (int) sizeof(line) - 12; k++) {
+          at += snprintf(line + at, sizeof(line) - at, " %08x", w[k]);
+        }
+        IOLog("%s\n", line);
+      }
+    }
+    if (map != NULL) {
+      map->release();
+    }
+  }
+
 	}
 	request->fence = hakios_gpu_submit(addresses, words, count);
 	if (gpu_log && request->fence != 0) {
@@ -1271,6 +1325,12 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 			break;
 		}
 		patience = millisecondsUntil(&r.waitFence.timeout);
+		if (patience >= 500) {
+			static uint32_t says;
+			if (says++ < 8) {
+				IOLog("HakiosGPU: wait for fence %u: patience %llu ms\n", r.waitFence.fence, (unsigned long long) patience);
+			}
+		}
 		if (!gpuWait(r.waitFence.fence, patience)) {
 			ret = kIOReturnTimeout;
 			if (patience == 0) {
@@ -1323,4 +1383,38 @@ HakiosGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
 		memcpy(args->structureOutput, &r, args->structureOutputSize);
 	}
 	return ret;
+}
+
+extern "C" void
+hakios_gpu_report_ib(uint64_t address, uint32_t remaining)
+{
+	struct gpu_buffer * b = gLastIb;
+	uint32_t total = gLastIbWords, at, from, show = 64;
+	IOMemoryMap * map;
+	uint32_t * w;
+
+	if (b == NULL || b->memory == NULL || total == 0) {
+		IOLog("adreno: gpu:   no command buffer to show\n");
+		return;
+	}
+	at = total > remaining ? total - remaining : 0;
+	from = at > 32 ? at - 32 : 0;
+	if (from + show > total) {
+		show = total > from ? total - from : 0;
+	}
+	map = b->memory->createMappingInTask(kernel_task, 0, kIODirectionInOut | kIOMapAnywhere);
+	if (map == NULL) {
+		IOLog("adreno: gpu:   command buffer at %#llx: cannot be mapped\n", (unsigned long long) address);
+		return;
+	}
+	w = (uint32_t *)((uint8_t *) map->getVirtualAddress() + gLastIbOffset);
+	{
+		char line[900];
+		int len = snprintf(line, sizeof(line), "adreno: gpu:   IB %#llx word %u of %u:", (unsigned long long) address, at, total);
+		for (uint32_t k = from; k < from + show && len > 0 && len < (int) sizeof(line) - 12; k++) {
+			len += snprintf(line + len, sizeof(line) - len, " %08x", w[k]);
+		}
+		IOLog("%s\n", line);
+	}
+	map->release();
 }

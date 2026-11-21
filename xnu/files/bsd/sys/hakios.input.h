@@ -121,6 +121,7 @@ bool hakios_gpu_done(uint32_t fence);
 uint32_t hakios_gpu_last(void);
 void hakios_gpu_worked(uint64_t *microseconds, uint32_t *submissions, uint32_t by[7]);
 void hakios_gpu_report(const char *why);
+void hakios_gpu_report_ib(uint64_t address, uint32_t remaining);
 void hakios_gpu_stop(void);
 #endif
 

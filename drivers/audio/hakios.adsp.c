@@ -3196,6 +3196,7 @@ steps_over(uint32_t done)
 void
 hakios_adsp_stop(void)
 {
+	tell("adsp: the run is ending: the audio DSP stop begins (dsp_started %d)\n", dsp_started ? 1 : 0);
 	battmgr_stop();
 	hakios_sound_dsp_down();               /* the amplifiers, the stream and the port first, while the DSP still listens */
 	hakios_mic_dsp_down();                 /* and what the microphones' path has asked for */

@@ -2518,6 +2518,7 @@ gmu_version_show(void)
 #define GMU_PWR_COL_INTER_FRAME_CTRL GMU_WORD(0x50c0)
 #define GMU_PWR_COL_SPTPRAC_HYST  GMU_WORD(0x50c2)   /* a6xx_reg.h: A6XX_GMU_PWR_COL_SPTPRAC_HYST 0x1f8c2 */
 #define GMU_GX_SPTPRAC_POWER_CONTROL GMU_WORD(0x0081) /* a6xx_reg.h: A6XX_GMU_GX_SPTPRAC_POWER_CONTROL 0x1a881 */
+#define GMU_GX_SPTPRAC_CLOCK_CONTROL GMU_WORD(0x0080) /* a6xx_reg.h: A6XX_GPU_GMU_GX_SPTPRAC_CLOCK_CONTROL, bit 0 */
 #define GMU_RPMH_CTRL           GMU_WORD(0x50e8)
 #define GMU_RPMH_CTRL_ALL       0xf11           /* the RPMh interface, and every vote the firmware may cast */
 #define GMU_CX_FAL_INTF         GMU_WORD(0x50f0)
@@ -4614,6 +4615,9 @@ step_core_start(void)
 	if (!cx_ready() || !core_is_on || !core_space_is_on) {
 		return false;
 	}
+	/* (bisect: no sw_reset) */
+
+	/* (bisect: no sptprac write) */
 	/*
 	 * Vendor _adreno_start() calls adreno_program_smmu_aperture() for
 	 * a640v1 before the core starts: an SCM call that lets the CP's own
@@ -4936,6 +4940,23 @@ step_core_commands(void)
 	if (!cx_ready() || !core_runs) {
 		return false;
 	}
+	/*
+	 * The ring starts empty: a command processor whose read position the firmware left ahead of
+	 * our write position reads stale commands (rptr 272 over wptr 259 in the CA runs, and the 3D
+	 * hung on the garbage). Zero the ring and put both positions at zero before the first run.
+	 */
+	{
+		volatile uint32_t *ring = (volatile uint32_t *) core_ring.memory;
+
+		for (uint32_t i = 0; i < RING_WORDS; i++) {
+			ring[i] = 0;
+		}
+		ring_at = 0;
+		ring_sent = 0;
+		wr(gpu.base + CP_RB_RPTR, 0);
+		wr(gpu.base + CP_RB_WPTR, 0);
+		printf("adreno: %u: the ring zeroed and its read/write positions put at zero\n", step);
+	}
 	announce("command the 3D core out of secure mode (it asks the zap shader), then to write a word into a page of ours");
 	ring_command(CP_SET_SECURE_MODE, 1);
 	ring(0);
@@ -5255,6 +5276,12 @@ gpu_block_stop(void)
 void
 hakios_adreno_quiesce(void)
 {
+	static int smmuOff = -1;
+	uint32_t wanted = 1;
+
+	if (smmuOff < 0) {
+		smmuOff = (PE_parse_boot_argn("adreno_qs_smmu", &wanted, sizeof(wanted)) && wanted == 0) ? 0 : 1;
+	}
 	if (cx_off) {
 		return;
 	}
@@ -5266,15 +5293,15 @@ hakios_adreno_quiesce(void)
 		core_bus_halt(true);
 		core_runs = false;
 	}
-	if (gmu_space_is_on) {
+	if (gmu_space_is_on && smmuOff) {
 		wr(smmu.base + smmu_context(&gmu_space) + SMMU_CB_SCTLR, 0);
 		gmu_space_is_on = false;
 	}
-	if (core_space_is_on) {
+	if (core_space_is_on && smmuOff) {
 		wr(smmu.base + smmu_context(&core_space) + SMMU_CB_SCTLR, 0);
 		core_space_is_on = false;
 	}
-	if (second_space_is_on) {
+	if (second_space_is_on && smmuOff) {
 		wr(smmu.base + smmu_context(&second_space) + SMMU_CB_SCTLR, 0);
 		second_space_is_on = false;
 	}
@@ -5592,10 +5619,102 @@ hakios_gpu_worked(uint64_t *microseconds, uint32_t *submissions, uint32_t by[7])
  * Linux's a6xx_submit puts them in the ring. Returns the submission's number; 0: the ring is
  * full and the core is not reading it.
  */
+static bool gHlsqClockSet;
+
+/*
+ * The RBBM clock-gating registers are at byte offsets that are not 4-aligned (0x0ae, 0x117,
+ * 0x11b, ...): the kernel's 32-bit store at such an address takes an unaligned data abort on
+ * this XNU, so each write is four byte stores, which the GPU's register bus takes.
+ */
+static void
+wr32u(vm_offset_t base, uint32_t offset, uint32_t value)
+{
+	volatile uint8_t *p = (volatile uint8_t *)(base + offset);
+
+	p[0] = (uint8_t)value;
+	p[1] = (uint8_t)(value >> 8);
+	p[2] = (uint8_t)(value >> 16);
+	p[3] = (uint8_t)(value >> 24);
+}
+
+/* the A640's hardware clock gating, from the vendor's a640_hwcg_regs / the upstream a640_hwcg */
+static const struct { uint32_t offset, value; } gpuHwcg[] = {
+	{ 0x000b0, 0x02222222 }, // RBBM_CLOCK_CNTL_SP0
+	{ 0x000b4, 0x02222220 }, // RBBM_CLOCK_CNTL2_SP0
+	{ 0x000b8, 0x00000080 }, // RBBM_CLOCK_DELAY_SP0
+	{ 0x000bc, 0x0000F3CF }, // RBBM_CLOCK_HYST_SP0
+	{ 0x000c0, 0x02222222 }, // RBBM_CLOCK_CNTL_TP0
+	{ 0x000c4, 0x22222222 }, // RBBM_CLOCK_CNTL2_TP0
+	{ 0x000c8, 0x22222222 }, // RBBM_CLOCK_CNTL3_TP0
+	{ 0x000cc, 0x00022222 }, // RBBM_CLOCK_CNTL4_TP0
+	{ 0x000d0, 0x11111111 }, // RBBM_CLOCK_DELAY_TP0
+	{ 0x000d4, 0x11111111 }, // RBBM_CLOCK_DELAY2_TP0
+	{ 0x000d8, 0x11111111 }, // RBBM_CLOCK_DELAY3_TP0
+	{ 0x000dc, 0x00011111 }, // RBBM_CLOCK_DELAY4_TP0
+	{ 0x000e0, 0x77777777 }, // RBBM_CLOCK_HYST_TP0
+	{ 0x000e4, 0x77777777 }, // RBBM_CLOCK_HYST2_TP0
+	{ 0x000e8, 0x77777777 }, // RBBM_CLOCK_HYST3_TP0
+	{ 0x000ec, 0x00077777 }, // RBBM_CLOCK_HYST4_TP0
+	{ 0x000f0, 0x22222222 }, // RBBM_CLOCK_CNTL_RB0
+	{ 0x000f4, 0x01002222 }, // RBBM_CLOCK_CNTL2_RB0
+	{ 0x000f8, 0x00002220 }, // RBBM_CLOCK_CNTL_CCU0
+	{ 0x00100, 0x00040F00 }, // RBBM_CLOCK_HYST_RB_CCU0
+	{ 0x00104, 0x05222022 }, // RBBM_CLOCK_CNTL_RAC
+	{ 0x00105, 0x00005555 }, // RBBM_CLOCK_CNTL2_RAC
+	{ 0x00106, 0x00000011 }, // RBBM_CLOCK_DELAY_RAC
+	{ 0x00107, 0x00445044 }, // RBBM_CLOCK_HYST_RAC
+	{ 0x00108, 0x04222222 }, // RBBM_CLOCK_CNTL_TSE_RAS_RBBM
+	{ 0x00111, 0x00002222 }, // RBBM_CLOCK_MODE_VFD
+	{ 0x00114, 0x00222222 }, // RBBM_CLOCK_MODE_GPC
+	{ 0x00117, 0x00000002 }, // RBBM_CLOCK_DELAY_HLSQ_2
+	{ 0x0011b, 0x00002222 }, // RBBM_CLOCK_MODE_HLSQ
+	{ 0x00109, 0x00004000 }, // RBBM_CLOCK_DELAY_TSE_RAS_RBBM
+	{ 0x00112, 0x00002222 }, // RBBM_CLOCK_DELAY_VFD
+	{ 0x00115, 0x00000200 }, // RBBM_CLOCK_DELAY_GPC
+	{ 0x0011c, 0x00000000 }, // RBBM_CLOCK_DELAY_HLSQ
+	{ 0x0010a, 0x00000000 }, // RBBM_CLOCK_HYST_TSE_RAS_RBBM
+	{ 0x00113, 0x00000000 }, // RBBM_CLOCK_HYST_VFD
+	{ 0x00116, 0x04104004 }, // RBBM_CLOCK_HYST_GPC
+	{ 0x0011d, 0x00000000 }, // RBBM_CLOCK_HYST_HLSQ
+	{ 0x00120, 0x00000222 }, // RBBM_CLOCK_CNTL_TEX_FCHE
+	{ 0x00121, 0x00000111 }, // RBBM_CLOCK_DELAY_TEX_FCHE
+	{ 0x00122, 0x00000000 }, // RBBM_CLOCK_HYST_TEX_FCHE
+	{ 0x0010b, 0x22222222 }, // RBBM_CLOCK_CNTL_UCHE
+	{ 0x00110, 0x00000004 }, // RBBM_CLOCK_HYST_UCHE
+	{ 0x0010f, 0x00000002 }, // RBBM_CLOCK_DELAY_UCHE
+	{ 0x00533, 0x00000182 }, // RBBM_ISDB_CNT
+	{ 0x00044, 0x00000000 }, // RBBM_RAC_THRESHOLD_CNT
+	{ 0x00042, 0x00000000 }, // RBBM_SP_HYST_CNT
+	{ 0x00118, 0x00000222 }, // RBBM_CLOCK_CNTL_GMU_GX
+	{ 0x00119, 0x00000111 }, // RBBM_CLOCK_DELAY_GMU_GX
+	{ 0x0011a, 0x00000555 }, // RBBM_CLOCK_HYST_GMU_GX
+};
+static bool gpuHwcgDone;
+static bool gpuIbDump, gpuIbDumped;
+
 uint32_t
 hakios_gpu_submit(const uint64_t *addresses, const uint32_t *words, uint32_t count)
 {
+	if (!gpuHwcgDone) {
+		gpuHwcgDone = true;
+		/* (hwcg off: it breaks the GL path on the pclm10) */
+		printf("adreno: hwcg: %u clock-gating registers and the global control written\n",
+		    (unsigned)(sizeof(gpuHwcg) / sizeof(gpuHwcg[0])));
+		printf("adreno: hwcg: %u clock-gating registers and the global control written\n",
+		    (unsigned)(sizeof(gpuHwcg) / sizeof(gpuHwcg[0])));
+		{
+			uint32_t dump = 0;
+			gpuIbDump = PE_parse_boot_argn("gpu_ib", &dump, sizeof(dump)) && dump;
+		}
+	}
+	if (gpuIbDump && !gpuIbDumped) {
+		gpuIbDumped = true;
+		hakios_gpu_report("gpu_ib dump");   /* the first submission's command buffer, head and tail */
+	}
 	uint32_t wanted = 26 + 4 * count, room = 0;
+
+
+
 
 	for (int i = 0; i < 20000; i++) {
 		room = (rd(gpu.base + CP_RB_RPTR) + RING_WORDS - ring_at - 1) % RING_WORDS;
@@ -5605,6 +5724,9 @@ hakios_gpu_submit(const uint64_t *addresses, const uint32_t *words, uint32_t cou
 		sleep_us(100);
 	}
 	if (room < wanted) {
+		printf("adreno: submit refused: room %u of %u, rptr %u, ring_at %u, fence %u, rbbm %#x\n", room, wanted,
+		    rd(gpu.base + CP_RB_RPTR), ring_at, gpu_fence, rd(gpu.base + RBBM_STATUS));
+		hakios_gpu_report("submit full");
 		return 0;
 	}
 	gpu_times();
@@ -5650,6 +5772,8 @@ hakios_gpu_report(const char *why)
 	printf("adreno: gpu:   in the first command buffer at %#llx, %u words to go; in the second at %#llx, %u to go\n",
 	    (uint64_t)rd(gpu.base + CP_IB1_BASE + 4) << 32 | rd(gpu.base + CP_IB1_BASE), rd(gpu.base + CP_IB1_REM_SIZE),
 	    (uint64_t)rd(gpu.base + CP_IB2_BASE + 4) << 32 | rd(gpu.base + CP_IB2_BASE), rd(gpu.base + CP_IB2_REM_SIZE));
+	printf("adreno: gpu:   ib dump hook: address %#llx remaining %u\n", (unsigned long long)((uint64_t)rd(gpu.base + CP_IB1_BASE + 4) << 32 | rd(gpu.base + CP_IB1_BASE)), rd(gpu.base + CP_IB1_REM_SIZE));
+	hakios_gpu_report_ib((uint64_t)rd(gpu.base + CP_IB1_BASE + 4) << 32 | rd(gpu.base + CP_IB1_BASE), rd(gpu.base + CP_IB1_REM_SIZE));
 	step = 0;
 	if (space_faulted(&core_space)) {
 		wr(smmu.base + context + SMMU_CB_FSR, SMMU_FSR_ALL);    /* so that the next one shows */
